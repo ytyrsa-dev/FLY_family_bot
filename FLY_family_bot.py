@@ -458,6 +458,12 @@ class MainMenuView(OwnedView):
         super().__init__(owner_id)
         self.rank = rank
 
+        # Видаляємо кнопку адмін-панелі якщо ранг < 7
+        if rank < 7:
+            for item in self.children.copy():
+                if hasattr(item, 'label') and item.label == "🛠 Адмін-панель":
+                    self.remove_item(item)
+
     @discord.ui.button(label="👤 Профіль", style=discord.ButtonStyle.secondary, row=0)
     async def profile(self, interaction: discord.Interaction, _):
         u = await user_by_did(interaction.user.id)
@@ -528,12 +534,15 @@ class MainMenuView(OwnedView):
         if u["rank"] < 5:
             await interaction.response.send_message("Функція доступна з рангу 5+", ephemeral=True)
             return
-        await interaction.response.send_modal(NotifyModal(interaction.user.id))
+        view = NotifyLevelSelectView(interaction.user.id)
+        await interaction.response.edit_message(
+            content="📢 **Сповістити гравців**\n\nВибери рівень контракту:", view=view
+        )
 
     @discord.ui.button(label="🛠 Адмін-панель", style=discord.ButtonStyle.danger, row=3)
     async def admin_panel(self, interaction: discord.Interaction, _):
         u = await user_by_did(interaction.user.id)
-        if u["rank"] < 5:
+        if u["rank"] < 7:
             await interaction.response.send_message("Нема доступу", ephemeral=True)
             return
         view = AdminMenuView(interaction.user.id, u["rank"])
@@ -1100,51 +1109,74 @@ class ContractConfirmView(OwnedView):
 # =========================================================
 # NOTIFY MODALS
 # =========================================================
-class NotifyModal(discord.ui.Modal, title="Сповістити гравців"):
-    contract_name = discord.ui.TextInput(label="Назва контракту", placeholder="Heist", min_length=1, max_length=100)
-    location = discord.ui.TextInput(label="Місце збору", placeholder="Порт, склад №3", min_length=1, max_length=100)
+class NotifyLevelSelectView(OwnedView):
+    @discord.ui.button(label="1️⃣ Рівень 1", style=discord.ButtonStyle.primary)
+    async def lvl1(self, interaction: discord.Interaction, _):
+        await self._pick(interaction, 1)
 
-    def __init__(self, owner_id: int):
-        super().__init__()
-        self.owner_id = owner_id
+    @discord.ui.button(label="2️⃣ Рівень 2", style=discord.ButtonStyle.primary)
+    async def lvl2(self, interaction: discord.Interaction, _):
+        await self._pick(interaction, 2)
 
-    async def on_submit(self, interaction: discord.Interaction):
-        await self._send_notify(interaction, self.contract_name.value, self.location.value)
+    @discord.ui.button(label="❌ Скасувати", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, _):
+        await send_main_menu(interaction, edit=True)
 
-    async def _send_notify(self, interaction, ct_title, location):
-        msg = (
-            "🚨 **ЗБІР НА КОНТРАКТ**\n\n"
-            f"📋 Контракт: {ct_title}\n"
-            f"📍 Місце: {location}\n"
-            "⏱ Починаємо через 5-10 хвилин\n\n"
-            "Чекаємо всіх на місці!"
-        )
-        users = await all_active_users()
-        sent = failed = 0
-        for u in users:
-            if u["discord_id"] == interaction.user.id:
-                continue
-            target = bot.get_user(u["discord_id"])
-            if target:
-                try:
-                    await target.send(msg)
-                    sent += 1
-                except Exception:
-                    failed += 1
-
-        caller = await user_by_did(interaction.user.id)
-        result = f"✅ Сповіщення надіслано **{sent}** гравцям"
-        if failed:
-            result += f"\nНе доставлено: {failed}"
-        result += "\n\n👇 Головне меню:"
+    async def _pick(self, interaction: discord.Interaction, level: int):
+        contracts = await all_contract_types(level)
+        if not contracts:
+            await interaction.response.send_message(
+                f"Контрактів {level} рівня поки немає.", ephemeral=True
+            )
+            return
+        view = NotifyContractSelectView(interaction.user.id, contracts)
+        lines = "\n".join(f"{c['id']}. **{c['title']}**" for c in contracts)
         await interaction.response.edit_message(
-            content=result,
-            view=MainMenuView(interaction.user.id, caller["rank"] if caller else 1),
+            content=f"📢 Контракти {level} рівня:\n\n{lines}\n\nВибери контракт:",
+            view=view,
         )
 
 
-class NotifyLocationModal(discord.ui.Modal, title="Місце збору"):
-    location = discord.ui.TextInput(label="Місце збору", placeholder="Порт, склад №3", min_length=1, max_length=100)
+class NotifyContractSelectView(OwnedView):
+    def __init__(self, owner_id: int, contracts):
+        super().__init__(owner_id)
+        self.contracts = {str(c["id"]): dict(c) for c in contracts}
+
+        opts = [
+            discord.SelectOption(label=c["title"], value=str(c["id"]))
+            for c in contracts
+        ]
+        sel = discord.ui.Select(placeholder="Вибери контракт...", options=opts)
+        sel.callback = self._on_select
+        self.add_item(sel)
+
+        back = discord.ui.Button(label="⬅️ Назад", style=discord.ButtonStyle.secondary)
+        back.callback = self._on_back
+        self.add_item(back)
+
+    async def _on_select(self, interaction: discord.Interaction):
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message("Не твоє меню", ephemeral=True)
+            return
+        chosen = self.contracts[interaction.data["values"][0]]
+        await interaction.response.send_modal(
+            NotifyLocationModal(interaction.user.id, chosen["title"])
+        )
+
+    async def _on_back(self, interaction: discord.Interaction):
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message("Не твоє меню", ephemeral=True)
+            return
+        view = NotifyLevelSelectView(interaction.user.id)
+        await interaction.response.edit_message(
+            content="📢 **Сповістити гравців**\n\nВибери рівень контракту:", view=view
+        )
+
+
+class NotifyLocationModal(discord.ui.Modal, title="Місце проведення"):
+    location = discord.ui.TextInput(
+        label="Локація", placeholder="Порт, склад №3", min_length=1, max_length=100
+    )
 
     def __init__(self, owner_id: int, ct_title: str):
         super().__init__()
@@ -1153,33 +1185,35 @@ class NotifyLocationModal(discord.ui.Modal, title="Місце збору"):
 
     async def on_submit(self, interaction: discord.Interaction):
         msg = (
-            "🚨 **ЗБІР НА КОНТРАКТ**\n\n"
-            f"📋 Контракт: {self.ct_title}\n"
-            f"📍 Місце: {self.location.value}\n"
+            "🚨 **ЗБІР НА КОНТРАКТ** @FLY\n\n"
+            f"📋 Контракт: **{self.ct_title}**\n"
+            f"📍 Локація: **{self.location.value}**\n"
             "⏱ Починаємо через 5-10 хвилин\n\n"
             "Чекаємо всіх на місці!"
         )
-        users = await all_active_users()
-        sent = failed = 0
-        for u in users:
-            if u["discord_id"] == interaction.user.id:
-                continue
-            target = bot.get_user(u["discord_id"])
-            if target:
-                try:
-                    await target.send(msg)
-                    sent += 1
-                except Exception:
-                    failed += 1
+
+        # Відправити в канал нотифікацій
+        channel = bot.get_channel(NOTIFY_CHANNEL_ID)
+        if channel:
+            # Знайти роль @FLY для згадки
+            guild = interaction.guild
+            fly_role = discord.utils.get(guild.roles, name="FLY") if guild else None
+            role_mention = fly_role.mention if fly_role else "@FLY"
+
+            notify_msg = (
+                f"🚨 **ЗБІР НА КОНТРАКТ** {role_mention}\n\n"
+                f"📋 Контракт: **{self.ct_title}**\n"
+                f"📍 Локація: **{self.location.value}**\n"
+                "⏱ Починаємо через 5-10 хвилин\n\n"
+                "Чекаємо всіх на місці!"
+            )
+            await channel.send(notify_msg)
 
         caller = await user_by_did(interaction.user.id)
-        result = f"✅ Сповіщення надіслано **{sent}** гравцям"
-        if failed:
-            result += f"\nНе доставлено: {failed}"
-        result += "\n\n👇 Головне меню:"
+        view = MainMenuView(interaction.user.id, caller["rank"] if caller else 1)
         await interaction.response.edit_message(
-            content=result,
-            view=MainMenuView(interaction.user.id, caller["rank"] if caller else 1),
+            content=f"✅ Сповіщення відправлено в канал нотифікацій\n\n👇 Головне меню:",
+            view=view,
         )
 
 
@@ -1268,8 +1302,8 @@ class AdminMenuView(OwnedView):
 
     @discord.ui.button(label="🗑 Видалити гравця", style=discord.ButtonStyle.red, row=3)
     async def del_player(self, interaction: discord.Interaction, _):
-        if self.rank < 8:
-            await interaction.response.send_message("Нема доступу (ранг 8+)", ephemeral=True)
+        if self.rank < 10:
+            await interaction.response.send_message("Нема доступу (тільки ранг 10)", ephemeral=True)
             return
         view = UserPickView(interaction.user.id, action="del_player", caller_rank=self.rank)
         await interaction.response.edit_message(
@@ -1469,31 +1503,36 @@ class ConfirmDeletePlayerView(OwnedView):
 
     @discord.ui.button(label="✅ Підтвердити видалення", style=discord.ButtonStyle.red)
     async def confirm(self, interaction: discord.Interaction, _):
-        target_db = await user_by_did(self.target.id)
-        if not target_db:
+        caller = await user_by_did(interaction.user.id)
+        if not caller or caller["rank"] < 10:
+            await interaction.response.send_message("Нема доступу (тільки ранг 10)", ephemeral=True)
+            return
+
+        # Видалити з БД повністю
+        async with db() as cx:
+            await cx.execute(
+                "DELETE FROM completed_contract_participants WHERE discord_id=?",
+                (self.target.id,)
+            )
+            await cx.execute("DELETE FROM users WHERE discord_id=?", (self.target.id,))
+            await cx.commit()
+
+        # Кікнути з сервера
+        try:
+            await self.target.kick(reason=f"Видалено адміністратором {interaction.user}")
+        except discord.Forbidden:
             await interaction.response.send_message(
-                "Гравець не знайдений у базі даних (можливо не реєструвався через бота)",
-                ephemeral=True,
+                "❌ Не вдалося кікнути — недостатньо прав у бота", ephemeral=True
             )
             return
-        await deactivate_user(target_db["static_id"])
-
-        # Зняти всі ролі рангів
-        rank_role_names = list(RANK_NAMES.values())
-        roles_to_remove = [r for r in self.target.roles if r.name in rank_role_names]
-        try:
-            if roles_to_remove:
-                await self.target.remove_roles(*roles_to_remove)
-        except discord.Forbidden:
-            pass
 
         u = await user_by_did(interaction.user.id)
         view = AdminMenuView(interaction.user.id, u["rank"] if u else self.caller_rank)
         await interaction.response.edit_message(
-            content=f"✅ Гравця **{self.target.display_name}** деактивовано.\n\n🛠 **Адмін-панель:**",
+            content=f"✅ Гравця **{self.target.display_name}** видалено з бази та кікнуто з сервера.\n\n🛠 **Адмін-панель:**",
             view=view,
         )
-        await notify(f"🗑 Деактивовано: {self.target.display_name} (@{self.target.name})")
+        await notify(f"🗑 Гравця **{self.target.display_name}** видалено та кікнуто.\nВидалив: {caller['game_name']}")
 
     @discord.ui.button(label="❌ Скасувати", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, _):
