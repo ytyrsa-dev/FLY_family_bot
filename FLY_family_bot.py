@@ -21,9 +21,10 @@ from discord.ext import commands
 # =========================================================
 # CONFIG
 # =========================================================
-BOT_TOKEN = "MTQ4NzUwMTk3ODgwNzMwODMxOA.GpkAmP.nJ10AfpHrDqB78_SbuU5QNfOCYMgq4pb3Hx8ik"
-ADMIN_IDS = {415914150850592791}
-NOTIFY_CHANNEL_ID = 1487515428388343899
+import os
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+ADMIN_IDS = {int(os.environ.get("ADMIN_IDS", "0"))}
+NOTIFY_CHANNEL_ID = int(os.environ.get("NOTIFY_CHANNEL_ID", "0"))
 
 RANK_NAMES = {
     1: "Пасажир", 2: "Новобранець", 3: "Кадет",
