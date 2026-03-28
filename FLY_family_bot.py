@@ -27,15 +27,15 @@ ADMIN_IDS = {int(os.environ.get("ADMIN_IDS", "0"))}
 NOTIFY_CHANNEL_ID = int(os.environ.get("NOTIFY_CHANNEL_ID", "0"))
 
 RANK_NAMES = {
-    1: "Пасажир", 2: "Новобранець", 3: "Кадет",
-    4: "Екіпаж",  5: "Пілот",       6: "Капітан",
-    7: "Командир екіпажу", 8: "Куратор",
+    1: "1 | Кандидат", 2: "2 | Резидент", 3: "3 | Оператор",
+    4: "4 | Основний склад",  5: "5 | Старший склад",       6: "Наставник",
+    7: "Куратор", 8: "Партнер",
     9: "Співзасновник",   10: "Засновник",
 }
 DB_NAME = "/data/database.db"
 
-# Назва ролі "Пасажир" на сервері (має збігатись точно)
-PASSENGER_ROLE_NAME = "Пасажир"
+# Назва ролі "1 | Кандидат" на сервері (має збігатись точно)
+PASSENGER_ROLE_NAME = "1 | Кандидат"
 
 
 def rank_label(r: int) -> str:
@@ -613,7 +613,7 @@ class RegisterModal(discord.ui.Modal, title="Реєстрація"):
         except discord.Forbidden:
             pass  # Немає прав — не критично
 
-        # Видати роль "Пасажир"
+        # Видати роль "1 | Кандидат"
         try:
             guild = interaction.guild
             if guild:
@@ -1673,29 +1673,29 @@ class GiveRoleSelectView(OwnedView):
         super().__init__(owner_id)
         self.target = target
 
-    @discord.ui.button(label="1 — Пасажир", style=discord.ButtonStyle.secondary, row=0)
-    async def r1(self, i, _): await self._give(i, "Пасажир")
+    @discord.ui.button(label="1 — 1 | Кандидат", style=discord.ButtonStyle.secondary, row=0)
+    async def r1(self, i, _): await self._give(i, "1 | Кандидат")
 
-    @discord.ui.button(label="2 — Новобранець", style=discord.ButtonStyle.secondary, row=0)
-    async def r2(self, i, _): await self._give(i, "Новобранець")
+    @discord.ui.button(label="2 — 2 | Резидент", style=discord.ButtonStyle.secondary, row=0)
+    async def r2(self, i, _): await self._give(i, "2 | Резидент")
 
-    @discord.ui.button(label="3 — Кадет", style=discord.ButtonStyle.secondary, row=0)
-    async def r3(self, i, _): await self._give(i, "Кадет")
+    @discord.ui.button(label="3 — 3 | Оператор", style=discord.ButtonStyle.secondary, row=0)
+    async def r3(self, i, _): await self._give(i, "3 | Оператор")
 
-    @discord.ui.button(label="4 — Екіпаж", style=discord.ButtonStyle.secondary, row=1)
-    async def r4(self, i, _): await self._give(i, "Екіпаж")
+    @discord.ui.button(label="4 — 4 | Основний склад", style=discord.ButtonStyle.secondary, row=1)
+    async def r4(self, i, _): await self._give(i, "4 | Основний склад")
 
-    @discord.ui.button(label="5 — Пілот", style=discord.ButtonStyle.primary, row=1)
-    async def r5(self, i, _): await self._give(i, "Пілот")
+    @discord.ui.button(label="5 — 5 | Старший склад", style=discord.ButtonStyle.primary, row=1)
+    async def r5(self, i, _): await self._give(i, "5 | Старший склад")
 
-    @discord.ui.button(label="6 — Капітан", style=discord.ButtonStyle.primary, row=1)
-    async def r6(self, i, _): await self._give(i, "Капітан")
+    @discord.ui.button(label="6 — Наставник", style=discord.ButtonStyle.primary, row=1)
+    async def r6(self, i, _): await self._give(i, "Наставник")
 
     @discord.ui.button(label="7 — Командир", style=discord.ButtonStyle.primary, row=2)
-    async def r7(self, i, _): await self._give(i, "Командир екіпажу")
+    async def r7(self, i, _): await self._give(i, "Куратор")
 
-    @discord.ui.button(label="8 — Куратор", style=discord.ButtonStyle.danger, row=2)
-    async def r8(self, i, _): await self._give(i, "Куратор")
+    @discord.ui.button(label="8 — Партнер", style=discord.ButtonStyle.danger, row=2)
+    async def r8(self, i, _): await self._give(i, "Партнер")
 
     @discord.ui.button(label="❌ Скасувати", style=discord.ButtonStyle.secondary, row=4)
     async def cancel(self, interaction: discord.Interaction, _):
