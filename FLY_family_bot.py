@@ -1277,15 +1277,15 @@ class AdminMenuView(OwnedView):
             return
         rows = await all_wd(20)
         if not rows:
-            await interaction.response.send_message("Заявок немає", ephemeral=True)
+            await interaction.response.edit_message(
+                content="💳 Заявок на вивід немає",
+                view=BackToAdminView(interaction.user.id, self.rank),
+            )
             return
-        lines = "\n".join(
-            f"#{r['id']} | {r['game_name']} | {r['amount']} | {r['status']} | {r['created_at'][:10]}"
-            for r in rows
-        )
+        view = WithdrawalListView(interaction.user.id, self.rank, [dict(r) for r in rows])
         await interaction.response.edit_message(
-            content=f"💳 **Заявки на вивід:**\n```\n{lines}\n```",
-            view=BackToAdminView(interaction.user.id, self.rank),
+            content=view._current_content(),
+            view=view,
         )
 
     @discord.ui.button(label="🪖 Встановити ранг", style=discord.ButtonStyle.primary, row=1)
@@ -1915,6 +1915,163 @@ class GiveRoleSelectView(OwnedView):
             f"Учасник: {self.target.display_name} (@{self.target.name})\n"
             f"Видав: {caller['game_name'] if caller else interaction.user}"
         )
+
+
+# =========================================================
+# WITHDRAWAL LIST VIEW
+# =========================================================
+class WithdrawalListView(OwnedView):
+    def __init__(self, owner_id: int, caller_rank: int, rows: list):
+        super().__init__(owner_id)
+        self.caller_rank = caller_rank
+        self.rows = rows
+        self.page = 0
+        self._build()
+
+    def _build(self):
+        self.clear_items()
+        if not self.rows:
+            return
+
+        row = self.rows[self.page]
+
+        if len(self.rows) > 1:
+            prev = discord.ui.Button(
+                label="◀️", style=discord.ButtonStyle.secondary,
+                disabled=(self.page == 0), row=0
+            )
+            prev.callback = self._on_prev
+            self.add_item(prev)
+
+            next_btn = discord.ui.Button(
+                label="▶️", style=discord.ButtonStyle.secondary,
+                disabled=(self.page >= len(self.rows) - 1), row=0
+            )
+            next_btn.callback = self._on_next
+            self.add_item(next_btn)
+
+        if row["status"] == "new":
+            approve = discord.ui.Button(label="✅ Схвалити", style=discord.ButtonStyle.green, row=1)
+            approve.callback = self._on_approve
+            self.add_item(approve)
+
+            reject = discord.ui.Button(label="❌ Відхилити", style=discord.ButtonStyle.red, row=1)
+            reject.callback = self._on_reject
+            self.add_item(reject)
+
+        if row["status"] == "approved":
+            paid = discord.ui.Button(label="💵 Відмітити виплаченим", style=discord.ButtonStyle.blurple, row=1)
+            paid.callback = self._on_paid
+            self.add_item(paid)
+
+        back = discord.ui.Button(label="⬅️ Назад", style=discord.ButtonStyle.secondary, row=2)
+        back.callback = self._on_back
+        self.add_item(back)
+
+    def _current_content(self) -> str:
+        if not self.rows:
+            return "Заявок немає"
+        row = self.rows[self.page]
+        status_map = {
+            "new": "🆕 Нова", "approved": "✅ Схвалена",
+            "rejected": "❌ Відхилена", "paid": "💵 Виплачена"
+        }
+        return (
+            f"💳 **Заявки на вивід** ({self.page + 1}/{len(self.rows)})\n\n"
+            f"**#{row['id']}** — {row['game_name']}\n"
+            f"💰 Сума: **{row['amount']}**\n"
+            f"Статус: {status_map.get(row['status'], row['status'])}\n"
+            f"Дата: {row['created_at'][:10]}"
+        )
+
+    async def _on_prev(self, interaction: discord.Interaction):
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message("Не твоє меню", ephemeral=True)
+            return
+        self.page -= 1
+        self._build()
+        await interaction.response.edit_message(content=self._current_content(), view=self)
+
+    async def _on_next(self, interaction: discord.Interaction):
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message("Не твоє меню", ephemeral=True)
+            return
+        self.page += 1
+        self._build()
+        await interaction.response.edit_message(content=self._current_content(), view=self)
+
+    async def _on_approve(self, interaction: discord.Interaction):
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message("Не твоє меню", ephemeral=True)
+            return
+        rev = await user_by_did(interaction.user.id)
+        if not rev or rev["rank"] < 8:
+            await interaction.response.send_message("Нема доступу", ephemeral=True)
+            return
+        row = self.rows[self.page]
+        await wd_set_status(row["id"], "approved", rev["discord_id"])
+        self.rows[self.page]["status"] = "approved"
+        self._build()
+        await interaction.response.edit_message(content=self._current_content(), view=self)
+        target = bot.get_user(row["discord_id"])
+        if target:
+            try:
+                await target.send(f"✅ Твою заявку на вивід **#{row['id']}** на суму **{row['amount']}** схвалено!")
+            except Exception:
+                pass
+
+    async def _on_reject(self, interaction: discord.Interaction):
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message("Не твоє меню", ephemeral=True)
+            return
+        rev = await user_by_did(interaction.user.id)
+        if not rev or rev["rank"] < 8:
+            await interaction.response.send_message("Нема доступу", ephemeral=True)
+            return
+        row = self.rows[self.page]
+        await wd_set_status(row["id"], "rejected", rev["discord_id"])
+        self.rows[self.page]["status"] = "rejected"
+        self._build()
+        await interaction.response.edit_message(content=self._current_content(), view=self)
+        target = bot.get_user(row["discord_id"])
+        if target:
+            try:
+                await target.send(f"❌ Твою заявку на вивід **#{row['id']}** на суму **{row['amount']}** відхилено.")
+            except Exception:
+                pass
+
+    async def _on_paid(self, interaction: discord.Interaction):
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message("Не твоє меню", ephemeral=True)
+            return
+        rev = await user_by_did(interaction.user.id)
+        if not rev or rev["rank"] < 9:
+            await interaction.response.send_message("Нема доступу (ранг 9+)", ephemeral=True)
+            return
+        row = self.rows[self.page]
+        player = await user_by_did(row["discord_id"])
+        if not player or player["balance"] < row["amount"]:
+            await interaction.response.send_message("Недостатньо балансу у гравця", ephemeral=True)
+            return
+        await deduct_balance(row["discord_id"], row["amount"])
+        await wd_set_paid(row["id"], rev["discord_id"])
+        self.rows[self.page]["status"] = "paid"
+        self._build()
+        await interaction.response.edit_message(content=self._current_content(), view=self)
+        target = bot.get_user(row["discord_id"])
+        if target:
+            try:
+                await target.send(f"💵 Твою заявку на вивід **#{row['id']}** на суму **{row['amount']}** виплачено!")
+            except Exception:
+                pass
+
+    async def _on_back(self, interaction: discord.Interaction):
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message("Не твоє меню", ephemeral=True)
+            return
+        u = await user_by_did(interaction.user.id)
+        view = AdminMenuView(interaction.user.id, u["rank"] if u else self.caller_rank)
+        await interaction.response.edit_message(content="🛠 **Адмін-панель:**", view=view)
 
 
 # =========================================================
