@@ -461,8 +461,12 @@ async def send_main_menu(interaction: discord.Interaction, edit: bool = False):
 
     view = MainMenuView(interaction.user.id, u["rank"])
     txt = (
-        f"👋 **Головне меню**\n\n"
-        f"👤 {u['game_name']}  |  {rank_label(u['rank'])}  |  💰 {u['balance']}"
+        f"╔══════════════════════╗\n"
+        f"      🏠 **ГОЛОВНЕ МЕНЮ**\n"
+        f"╚══════════════════════╝\n\n"
+        f"👤 **{u['game_name']}**\n"
+        f"🎖️ {rank_label(u['rank'])}\n"
+        f"💵 Баланс: **${u['balance']:,}**"
     )
     if edit:
         await interaction.response.edit_message(content=txt, view=view)
@@ -481,25 +485,33 @@ class MainMenuView(OwnedView):
                 if hasattr(item, 'label') and item.label == "🛠 Адмін-панель":
                     self.remove_item(item)
 
-    @discord.ui.button(label="👤 Профіль", style=discord.ButtonStyle.secondary, row=0)
+    @discord.ui.button(label="👤 Профіль", style=discord.ButtonStyle.blurple, row=0)
     async def profile(self, interaction: discord.Interaction, _):
         u = await user_by_did(interaction.user.id)
         txt = (
-            "👤 **Профіль**\n\n"
-            f"Ігрове ім'я: {u['game_name']}\n"
-            f"Static ID: {u['static_id']}\n"
-            f"Реальне ім'я: {u['real_name']}\n\n"
-            f"Ранг: {rank_label(u['rank'])}\n"
-            f"Баланс: {u['balance']}\n"
-            f"Контракти: {u['contracts_count']}"
+            "╔══════════════════════╗\n"
+            "         👤 **ПРОФІЛЬ**\n"
+            "╚══════════════════════╝\n\n"
+            f"🎮 **Ігрове ім'я:** {u['game_name']}\n"
+            f"🆔 **Static ID:** `{u['static_id']}`\n"
+            f"🙍 **Реальне ім'я:** {u['real_name']}\n\n"
+            f"🎖️ **Ранг:** {rank_label(u['rank'])}\n"
+            f"💵 **Баланс:** ${u['balance']:,}\n"
+            f"📋 **Контракти:** {u['contracts_count']}"
         )
         await interaction.response.edit_message(content=txt, view=BackView(interaction.user.id))
 
-    @discord.ui.button(label="💰 Баланс", style=discord.ButtonStyle.secondary, row=0)
+    @discord.ui.button(label="💰 Баланс", style=discord.ButtonStyle.blurple, row=0)
     async def balance(self, interaction: discord.Interaction, _):
         u = await user_by_did(interaction.user.id)
         await interaction.response.edit_message(
-            content=f"💰 Твій баланс: **{u['balance']}**",
+            content=(
+                "╔══════════════════════╗\n"
+                "         💰 **БАЛАНС**\n"
+                "╚══════════════════════╝\n\n"
+                f"💵 Твій поточний баланс:\n"
+                f"# ${u['balance']:,}"
+            ),
             view=BackView(interaction.user.id),
         )
 
@@ -517,16 +529,26 @@ class MainMenuView(OwnedView):
             )).fetchall()
 
         if not rows:
-            txt = "📄 Ти ще не брав участі в жодному контракті."
+            txt = (
+                "╔══════════════════════╗\n"
+                "     📄 **МОЇ КОНТРАКТИ**\n"
+                "╚══════════════════════╝\n\n"
+                "😔 Ти ще не брав участі в жодному контракті."
+            )
         else:
             lines = "\n".join(
-                f"#{r['id']} | {r['contract_title']} | +{r['payout_amount']} | {r['created_at'][:10]}"
+                f"▸ #{r['id']} | {r['contract_title']} | **+${r['payout_amount']:,}** | {r['created_at'][:10]}"
                 for r in rows
             )
-            txt = f"📄 **Мої контракти** (останні {len(rows)}):\n```\n{lines}\n```"
+            txt = (
+                "╔══════════════════════╗\n"
+                "     📄 **МОЇ КОНТРАКТИ**\n"
+                "╚══════════════════════╝\n\n"
+                f"{lines}"
+            )
         await interaction.response.edit_message(content=txt, view=BackView(interaction.user.id))
 
-    @discord.ui.button(label="💸 Вивід коштів", style=discord.ButtonStyle.primary, row=1)
+    @discord.ui.button(label="💸 Запросити вивід", style=discord.ButtonStyle.secondary, row=1)
     async def withdraw(self, interaction: discord.Interaction, _):
         u = await user_by_did(interaction.user.id)
         if u["balance"] <= 0:
@@ -556,7 +578,7 @@ class MainMenuView(OwnedView):
             content="📢 **Сповістити гравців**\n\nВибери рівень контракту:", view=view
         )
 
-    @discord.ui.button(label="🛠 Адмін-панель", style=discord.ButtonStyle.danger, row=3)
+    @discord.ui.button(label="🛠 Адмін-панель", style=discord.ButtonStyle.blurple, row=3)
     async def admin_panel(self, interaction: discord.Interaction, _):
         u = await user_by_did(interaction.user.id)
         if u["rank"] < 7:
@@ -812,11 +834,11 @@ class LevelSelectView(OwnedView):
         super().__init__(owner_id)
         self.flow = flow
 
-    @discord.ui.button(label="1️⃣ Рівень 1", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="1️⃣ Рівень 1", style=discord.ButtonStyle.blurple)
     async def lvl1(self, interaction: discord.Interaction, _):
         await self._pick(interaction, 1)
 
-    @discord.ui.button(label="2️⃣ Рівень 2", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="2️⃣ Рівень 2", style=discord.ButtonStyle.blurple)
     async def lvl2(self, interaction: discord.Interaction, _):
         await self._pick(interaction, 2)
 
@@ -1057,15 +1079,17 @@ class PlayerLookupView(OwnedView):
 
         await interaction.response.edit_message(
             content=(
-                f"👤 **Профіль гравця:**\n\n"
-                f"Ігрове ім'я: {db_user['game_name']}\n"
-                f"Static ID: {db_user['static_id']}\n"
-                f"Реальне ім'я: {db_user['real_name']}\n"
-                f"Discord: {member.mention if member else did}\n\n"
-                f"Ранг: {rank_label(db_user['rank'])}\n"
-                f"Баланс: {db_user['balance']}\n"
-                f"Контракти: {db_user['contracts_count']}\n"
-                f"Статус: {'✅ Активний' if db_user['is_active'] else '❌ Деактивований'}"
+                "╔══════════════════════╗\n"
+                "      👤 **ПРОФІЛЬ ГРАВЦЯ**\n"
+                "╚══════════════════════╝\n\n"
+                f"🎮 **Ігрове ім'я:** {db_user['game_name']}\n"
+                f"🆔 **Static ID:** `{db_user['static_id']}`\n"
+                f"🙍 **Реальне ім'я:** {db_user['real_name']}\n"
+                f"💬 **Discord:** {member.mention if member else did}\n\n"
+                f"🎖️ **Ранг:** {rank_label(db_user['rank'])}\n"
+                f"💵 **Баланс:** ${db_user['balance']:,}\n"
+                f"📋 **Контракти:** {db_user['contracts_count']}\n"
+                f"{'✅ Активний' if db_user['is_active'] else '❌ Деактивований'}"
             ),
             view=PlayerLookupView(interaction.user.id, self.caller_rank),
         )
@@ -1133,11 +1157,11 @@ class ContractConfirmView(OwnedView):
 # NOTIFY MODALS
 # =========================================================
 class NotifyLevelSelectView(OwnedView):
-    @discord.ui.button(label="1️⃣ Рівень 1", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="1️⃣ Рівень 1", style=discord.ButtonStyle.blurple)
     async def lvl1(self, interaction: discord.Interaction, _):
         await self._pick(interaction, 1)
 
-    @discord.ui.button(label="2️⃣ Рівень 2", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="2️⃣ Рівень 2", style=discord.ButtonStyle.blurple)
     async def lvl2(self, interaction: discord.Interaction, _):
         await self._pick(interaction, 2)
 
@@ -1248,7 +1272,7 @@ class AdminMenuView(OwnedView):
         super().__init__(owner_id)
         self.rank = rank
 
-    @discord.ui.button(label="📋 Типи контрактів", style=discord.ButtonStyle.secondary, row=0)
+    @discord.ui.button(label="📋 Типи контрактів", style=discord.ButtonStyle.blurple, row=0)
     async def ct_list(self, interaction: discord.Interaction, _):
         rows = await all_contract_types()
         if not rows:
@@ -1262,7 +1286,7 @@ class AdminMenuView(OwnedView):
         txt += "\n".join(f"  {r['id']}. {r['title']} — {r['price']}" for r in l2) or "  Порожньо"
         await interaction.response.edit_message(content=txt, view=BackToAdminView(interaction.user.id, self.rank))
 
-    @discord.ui.button(label="👥 Гравці", style=discord.ButtonStyle.secondary, row=0)
+    @discord.ui.button(label="👥 Гравці", style=discord.ButtonStyle.blurple, row=0)
     async def players_list(self, interaction: discord.Interaction, _):
         view = PlayerLookupView(interaction.user.id, self.rank)
         await interaction.response.edit_message(
@@ -1270,7 +1294,7 @@ class AdminMenuView(OwnedView):
             view=view,
         )
 
-    @discord.ui.button(label="💳 Заявки на вивід", style=discord.ButtonStyle.secondary, row=0)
+    @discord.ui.button(label="💳 Заявки на вивід", style=discord.ButtonStyle.blurple, row=0)
     async def wd_list(self, interaction: discord.Interaction, _):
         if self.rank < 8:
             await interaction.response.send_message("Нема доступу (ранг 8+)", ephemeral=True)
@@ -1288,7 +1312,7 @@ class AdminMenuView(OwnedView):
             view=view,
         )
 
-    @discord.ui.button(label="🪖 Встановити ранг", style=discord.ButtonStyle.primary, row=1)
+    @discord.ui.button(label="🪖 Встановити ранг", style=discord.ButtonStyle.secondary, row=1)
     async def set_rank_btn(self, interaction: discord.Interaction, _):
         if self.rank < 6:
             await interaction.response.send_message("Нема доступу (ранг 6+)", ephemeral=True)
@@ -1309,31 +1333,31 @@ class AdminMenuView(OwnedView):
             view=BackToAdminView(interaction.user.id, self.rank),
         )
 
-    @discord.ui.button(label="➕ Додати тип контракту", style=discord.ButtonStyle.green, row=2)
+    @discord.ui.button(label="🎭 Видати роль", style=discord.ButtonStyle.secondary, row=1)
+    async def give_role(self, interaction: discord.Interaction, _):
+        if self.rank < 6:
+            await interaction.response.send_message("Нема доступу (ранг 6+)", ephemeral=True)
+            return
+        view = UserPickView(interaction.user.id, action="give_role", caller_rank=self.rank)
+        await interaction.response.edit_message(
+            content="🎭 **Видати роль**\n\nВибери учасника зі списку:", view=view
+        )
+
+    @discord.ui.button(label="➕ Додати контракт", style=discord.ButtonStyle.green, row=2)
     async def add_ct(self, interaction: discord.Interaction, _):
         if self.rank < 8:
             await interaction.response.send_message("Нема доступу (ранг 8+)", ephemeral=True)
             return
         await interaction.response.send_modal(AddContractTypeModal())
 
-    @discord.ui.button(label="🗑 Видалити тип контракту", style=discord.ButtonStyle.red, row=2)
+    @discord.ui.button(label="🗑 Видалити контракт", style=discord.ButtonStyle.red, row=2)
     async def del_ct(self, interaction: discord.Interaction, _):
         if self.rank < 8:
             await interaction.response.send_message("Нема доступу (ранг 8+)", ephemeral=True)
             return
         await interaction.response.send_modal(DeleteContractTypeModal())
 
-    @discord.ui.button(label="🗑 Видалити гравця", style=discord.ButtonStyle.red, row=3)
-    async def del_player(self, interaction: discord.Interaction, _):
-        if self.rank < 10:
-            await interaction.response.send_message("Нема доступу (тільки ранг 10)", ephemeral=True)
-            return
-        view = UserPickView(interaction.user.id, action="del_player", caller_rank=self.rank)
-        await interaction.response.edit_message(
-            content="🗑 **Видалити гравця**\n\nВибери учасника зі списку:", view=view
-        )
-
-    @discord.ui.button(label="✏️ Змінити контракт", style=discord.ButtonStyle.primary, row=3)
+    @discord.ui.button(label="✏️ Змінити контракт", style=discord.ButtonStyle.secondary, row=3)
     async def edit_cc(self, interaction: discord.Interaction, _):
         if self.rank < 8:
             await interaction.response.send_message("Нема доступу (ранг 8+)", ephemeral=True)
@@ -1344,21 +1368,21 @@ class AdminMenuView(OwnedView):
             view=view,
         )
 
-    @discord.ui.button(label="🗑 Видалити контракт", style=discord.ButtonStyle.red, row=4)
+    @discord.ui.button(label="🗑 Видалити виконаний", style=discord.ButtonStyle.red, row=3)
     async def del_cc(self, interaction: discord.Interaction, _):
         if self.rank < 8:
             await interaction.response.send_message("Нема доступу (ранг 8+)", ephemeral=True)
             return
         await interaction.response.send_modal(DeleteContractModal())
 
-    @discord.ui.button(label="🎭 Видати роль гравцю", style=discord.ButtonStyle.primary, row=3)
-    async def give_role(self, interaction: discord.Interaction, _):
-        if self.rank < 6:
-            await interaction.response.send_message("Нема доступу (ранг 6+)", ephemeral=True)
+    @discord.ui.button(label="🚫 Видалити гравця", style=discord.ButtonStyle.red, row=4)
+    async def del_player(self, interaction: discord.Interaction, _):
+        if self.rank < 10:
+            await interaction.response.send_message("Нема доступу (тільки ранг 10)", ephemeral=True)
             return
-        view = UserPickView(interaction.user.id, action="give_role", caller_rank=self.rank)
+        view = UserPickView(interaction.user.id, action="del_player", caller_rank=self.rank)
         await interaction.response.edit_message(
-            content="🎭 **Видати роль**\n\nВибери учасника зі списку:", view=view
+            content="🚫 **Видалити гравця**\n\nВибери учасника зі списку:", view=view
         )
 
     @discord.ui.button(label="⬅️ Головне меню", style=discord.ButtonStyle.secondary, row=4)
@@ -1887,13 +1911,17 @@ class GiveRoleSelectView(OwnedView):
             )
             return
 
-        # Знімаємо всі ролі рангів, додаємо нову
+        # Знімаємо всі ролі рангів, додаємо нову + @FLY
         rank_role_names = list(RANK_NAMES.values())
         roles_to_remove = [r for r in self.target.roles if r.name in rank_role_names]
+        fly_role = discord.utils.get(guild.roles, name="FLY")
         try:
             if roles_to_remove:
                 await self.target.remove_roles(*roles_to_remove)
-            await self.target.add_roles(role)
+            roles_to_add = [role]
+            if fly_role and fly_role not in self.target.roles:
+                roles_to_add.append(fly_role)
+            await self.target.add_roles(*roles_to_add)
         except discord.Forbidden:
             await interaction.response.send_message(
                 "❌ Боту не вистачає прав для видачі ролі.\nПеревір що роль бота вища за роль учасника.",
@@ -1977,11 +2005,14 @@ class WithdrawalListView(OwnedView):
             "rejected": "❌ Відхилена", "paid": "💵 Виплачена"
         }
         return (
-            f"💳 **Заявки на вивід** ({self.page + 1}/{len(self.rows)})\n\n"
-            f"**#{row['id']}** — {row['game_name']}\n"
-            f"💰 Сума: **{row['amount']}**\n"
-            f"Статус: {status_map.get(row['status'], row['status'])}\n"
-            f"Дата: {row['created_at'][:10]}"
+            f"╔══════════════════════╗\n"
+            f"    💳 **ЗАЯВКИ НА ВИВІД**\n"
+            f"╚══════════════════════╝\n"
+            f"_{self.page + 1} з {len(self.rows)}_\n\n"
+            f"👤 **{row['game_name']}**\n"
+            f"💵 Сума: **${row['amount']:,}**\n"
+            f"📊 Статус: {status_map.get(row['status'], row['status'])}\n"
+            f"📅 Дата: {row['created_at'][:10]}"
         )
 
     async def _on_prev(self, interaction: discord.Interaction):
