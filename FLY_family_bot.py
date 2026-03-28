@@ -1691,7 +1691,7 @@ class GiveRoleSelectView(OwnedView):
     @discord.ui.button(label="6 — Наставник", style=discord.ButtonStyle.primary, row=1)
     async def r6(self, i, _): await self._give(i, "Наставник")
 
-    @discord.ui.button(label="7 — Командир", style=discord.ButtonStyle.primary, row=2)
+    @discord.ui.button(label="7 — Куратор", style=discord.ButtonStyle.primary, row=2)
     async def r7(self, i, _): await self._give(i, "Куратор")
 
     @discord.ui.button(label="8 — Партнер", style=discord.ButtonStyle.danger, row=2)
