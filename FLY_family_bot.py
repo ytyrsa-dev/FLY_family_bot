@@ -27,6 +27,7 @@ import os
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 ADMIN_IDS = {int(os.environ.get("ADMIN_IDS", "0"))}
 NOTIFY_CHANNEL_ID = int(os.environ.get("NOTIFY_CHANNEL_ID", "0"))
+GATHER_CHANNEL_ID = int(os.environ.get("GATHER_CHANNEL_ID", "0"))  # канал для збору на контракт
 
 RANK_NAMES = {
     1: "1 | Кандидат", 2: "2 | Резидент", 3: "3 | Оператор",
@@ -1558,8 +1559,8 @@ class NotifyLocationModal(discord.ui.Modal, title="Місце проведенн
             "Чекаємо всіх на місці!"
         )
 
-        # Відправити в канал нотифікацій
-        channel = bot.get_channel(NOTIFY_CHANNEL_ID)
+        # Відправити в канал збору (окремий від загального каналу сповіщень)
+        channel = bot.get_channel(GATHER_CHANNEL_ID) or bot.get_channel(NOTIFY_CHANNEL_ID)
         if channel:
             # Знайти роль @FLY для згадки
             guild = interaction.guild
