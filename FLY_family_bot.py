@@ -1043,7 +1043,7 @@ class ParticipantsView(OwnedView):
                 "📋 **Перевір контракт:**\n\n"
                 f"Контракт: {s['ct_title']}\n"
                 f"Сума: {total}\n"
-                f"Сім'ї (10%): {fam}\n"
+                f"Сім'ї (40%): {fam}\n"
                 f"Кожному: {per}\n\n"
                 f"Учасники ({len(ids)}):\n{names_txt}"
             ),
