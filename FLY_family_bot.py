@@ -16,6 +16,7 @@ import asyncio
 import aiosqlite
 import discord
 import time
+from datetime import datetime, timedelta, timezone
 from discord import app_commands
 from discord.ext import commands
 
@@ -287,6 +288,108 @@ async def all_wd(limit=30):
         return await (await cx.execute(
             "SELECT * FROM withdrawal_requests ORDER BY id DESC LIMIT ?", (limit,)
         )).fetchall()
+
+
+# =========================================================
+# DB: ТОП КОНТРАКТІВ
+# =========================================================
+def get_week_bounds() -> tuple[str, str]:
+    """Повертає (початок_нд, кінець_нд) поточного тижня у форматі ISO."""
+    now = datetime.now(timezone.utc)
+    # Знаходимо минулу неділю (weekday: 6=нд)
+    days_since_sunday = (now.weekday() + 1) % 7
+    start = (now - timedelta(days=days_since_sunday)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    end = start + timedelta(days=7)
+    return start.isoformat(), end.isoformat()
+
+
+async def get_top_alltime(limit: int = 10):
+    """Топ гравців за всіма часами — за кількістю контрактів і сумою."""
+    async with db() as cx:
+        cx.row_factory = aiosqlite.Row
+        return await (await cx.execute("""
+            SELECT u.game_name, u.static_id, u.contracts_count,
+                   COALESCE(SUM(ccp.payout_amount), 0) as total_earned
+            FROM users u
+            LEFT JOIN completed_contract_participants ccp ON ccp.discord_id = u.discord_id
+            WHERE u.is_active = 1
+            GROUP BY u.discord_id
+            ORDER BY total_earned DESC, u.contracts_count DESC
+            LIMIT ?
+        """, (limit,))).fetchall()
+
+
+async def get_top_weekly(limit: int = 10):
+    """Топ гравців за поточний тиждень (Нд→Нд)."""
+    start, end = get_week_bounds()
+    async with db() as cx:
+        cx.row_factory = aiosqlite.Row
+        return await (await cx.execute("""
+            SELECT u.game_name, u.static_id,
+                   COUNT(ccp.id) as week_contracts,
+                   COALESCE(SUM(ccp.payout_amount), 0) as week_earned
+            FROM users u
+            LEFT JOIN completed_contract_participants ccp ON ccp.discord_id = u.discord_id
+            LEFT JOIN completed_contracts cc ON cc.id = ccp.completed_contract_id
+                AND cc.created_at >= ? AND cc.created_at < ?
+            WHERE u.is_active = 1
+            GROUP BY u.discord_id
+            ORDER BY week_earned DESC, week_contracts DESC
+            LIMIT ?
+        """, (start, end, limit))).fetchall()
+
+
+async def get_weekly_family_fund() -> int:
+    """Сума що надійшла до сімейного банку за поточний тиждень."""
+    start, end = get_week_bounds()
+    async with db() as cx:
+        cx.row_factory = aiosqlite.Row
+        row = await (await cx.execute("""
+            SELECT COALESCE(SUM(family_amount), 0) as total
+            FROM completed_contracts
+            WHERE created_at >= ? AND created_at < ?
+        """, (start, end))).fetchone()
+        return row["total"] if row else 0
+
+
+async def get_all_active_users_with_weekly(start: str, end: str):
+    """Всі активні гравці з їх тижневим заробітком."""
+    async with db() as cx:
+        cx.row_factory = aiosqlite.Row
+        return await (await cx.execute("""
+            SELECT u.discord_id, u.game_name, u.static_id,
+                   COALESCE(SUM(ccp.payout_amount), 0) as week_earned
+            FROM users u
+            LEFT JOIN completed_contract_participants ccp ON ccp.discord_id = u.discord_id
+            LEFT JOIN completed_contracts cc ON cc.id = ccp.completed_contract_id
+                AND cc.created_at >= ? AND cc.created_at < ?
+            WHERE u.is_active = 1
+            GROUP BY u.discord_id
+            ORDER BY week_earned DESC
+        """, (start, end))).fetchall()
+
+
+async def add_to_balance(discord_id: int, amount: int):
+    async with db() as cx:
+        await cx.execute(
+            "UPDATE users SET balance=balance+? WHERE discord_id=? AND is_active=1",
+            (amount, discord_id),
+        )
+        await cx.commit()
+
+
+async def set_family_balance(amount: int):
+    async with db() as cx:
+        await cx.execute("UPDATE family_bank SET balance=? WHERE id=1", (amount,))
+        await cx.commit()
+
+
+async def add_to_family_balance(amount: int):
+    async with db() as cx:
+        await cx.execute("UPDATE family_bank SET balance=balance+? WHERE id=1", (amount,))
+        await cx.commit()
 
 
 # ---------- completed contracts ----------
@@ -586,6 +689,23 @@ class MainMenuView(OwnedView):
             return
         view = AdminMenuView(interaction.user.id, u["rank"])
         await interaction.response.edit_message(content="🛠 **Адмін-панель**:", view=view)
+
+    @discord.ui.button(label="🏆 Топ гравців", style=discord.ButtonStyle.secondary, row=3)
+    async def top_players(self, interaction: discord.Interaction, _):
+        view = TopSelectView(interaction.user.id)
+        await interaction.response.edit_message(
+            content="🏆 **Топ гравців** — вибери період:", view=view
+        )
+
+    @discord.ui.button(label="💎 Донат сім'ї", style=discord.ButtonStyle.secondary, row=4)
+    async def donate(self, interaction: discord.Interaction, _):
+        u = await user_by_did(interaction.user.id)
+        if u["balance"] <= 0:
+            await interaction.response.send_message(
+                "❌ Твій баланс порожній.", ephemeral=True
+            )
+            return
+        await interaction.response.send_modal(DonateModal())
 
 
 # =========================================================
@@ -1043,7 +1163,7 @@ class ParticipantsView(OwnedView):
                 "📋 **Перевір контракт:**\n\n"
                 f"Контракт: {s['ct_title']}\n"
                 f"Сума: {total}\n"
-                f"Сім'ї (40%): {fam}\n"
+                f"Сім'ї (10%): {fam}\n"
                 f"Кожному: {per}\n\n"
                 f"Учасники ({len(ids)}):\n{names_txt}"
             ),
@@ -1345,13 +1465,27 @@ class AdminMenuView(OwnedView):
             await interaction.response.send_message("Нема доступу (ранг 8+)", ephemeral=True)
             return
         bal = await family_balance()
+        view = FamilyBalanceView(interaction.user.id, self.rank)
         await interaction.response.edit_message(
-            content=f"🏦 Баланс сім'ї: **{bal}**",
-            view=BackToAdminView(interaction.user.id, self.rank),
+            content=(
+                "╔══════════════════════╗\n"
+                "      🏦 **БАЛАНС СІМ'Ї**\n"
+                "╚══════════════════════╝\n\n"
+                f"💵 Поточний баланс: **${bal:,}**"
+            ),
+            view=view,
         )
 
-    @discord.ui.button(label="🎭 Видати роль", style=discord.ButtonStyle.secondary, row=1)
-    async def give_role(self, interaction: discord.Interaction, _):
+    @discord.ui.button(label="🎁 Видати премію", style=discord.ButtonStyle.green, row=1)
+    async def give_bonus(self, interaction: discord.Interaction, _):
+        if self.rank < 9:
+            await interaction.response.send_message("Нема доступу (ранг 9+)", ephemeral=True)
+            return
+        view = BonusUserPickView(interaction.user.id, self.rank)
+        await interaction.response.edit_message(
+            content="🎁 **Видати премію**\n\nВибери гравця через @:",
+            view=view,
+        )
         if self.rank < 6:
             await interaction.response.send_message("Нема доступу (ранг 6+)", ephemeral=True)
             return
@@ -2110,6 +2244,446 @@ class WithdrawalListView(OwnedView):
 
 
 # =========================================================
+# BONUS — видача премії гравцю (ранг 9+)
+# =========================================================
+class BonusUserPickView(OwnedView):
+    def __init__(self, owner_id: int, caller_rank: int):
+        super().__init__(owner_id)
+        self.caller_rank = caller_rank
+
+        sel = discord.ui.UserSelect(placeholder="Вибери гравця для премії...")
+        sel.callback = self._on_pick
+        self.add_item(sel)
+
+        back = discord.ui.Button(label="⬅️ Назад", style=discord.ButtonStyle.secondary, row=1)
+        back.callback = self._on_back
+        self.add_item(back)
+
+    async def _on_pick(self, interaction: discord.Interaction):
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message("Не твоє меню", ephemeral=True)
+            return
+
+        resolved = interaction.data.get("resolved", {}).get("users", {})
+        did = int(list(resolved.keys())[0])
+        member = interaction.guild.get_member(did)
+        db_user = await user_by_did(did)
+
+        if not db_user:
+            name = member.display_name if member else str(did)
+            await interaction.response.edit_message(
+                content=f"❌ **{name}** не зареєстрований у боті.",
+                view=BonusUserPickView(interaction.user.id, self.caller_rank),
+            )
+            return
+
+        if did == interaction.user.id:
+            await interaction.response.send_message(
+                "❌ Не можна видати премію самому собі", ephemeral=True
+            )
+            return
+
+        await interaction.response.send_modal(
+            BonusModal(interaction.user.id, self.caller_rank, db_user["discord_id"], db_user["game_name"])
+        )
+
+    async def _on_back(self, interaction: discord.Interaction):
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message("Не твоє меню", ephemeral=True)
+            return
+        u = await user_by_did(interaction.user.id)
+        view = AdminMenuView(interaction.user.id, u["rank"] if u else self.caller_rank)
+        await interaction.response.edit_message(content="🛠 **Адмін-панель:**", view=view)
+
+
+class BonusModal(discord.ui.Modal, title="Видати премію"):
+    amount_field = discord.ui.TextInput(
+        label="Сума премії", placeholder="5000", min_length=1, max_length=10
+    )
+    reason_field = discord.ui.TextInput(
+        label="Причина (необов'язково)", placeholder="За активну участь...",
+        required=False, max_length=200
+    )
+
+    def __init__(self, owner_id: int, caller_rank: int, target_did: int, target_name: str):
+        super().__init__()
+        self.owner_id = owner_id
+        self.caller_rank = caller_rank
+        self.target_did = target_did
+        self.target_name = target_name
+
+    async def on_submit(self, interaction: discord.Interaction):
+        caller = await user_by_did(interaction.user.id)
+        if not caller or caller["rank"] < 9:
+            await interaction.response.send_message("Нема доступу", ephemeral=True)
+            return
+
+        try:
+            amount = int(self.amount_field.value.strip())
+        except ValueError:
+            await interaction.response.send_message("Сума — число", ephemeral=True)
+            return
+        if amount <= 0:
+            await interaction.response.send_message("Сума > 0", ephemeral=True)
+            return
+
+        reason = self.reason_field.value.strip() if self.reason_field.value else "—"
+
+        await add_to_balance(self.target_did, amount)
+
+        view = BackToAdminView(interaction.user.id, caller["rank"])
+        await interaction.response.edit_message(
+            content=(
+                f"✅ Премія видана!\n\n"
+                f"👤 Гравець: **{self.target_name}**\n"
+                f"💵 Сума: **${amount:,}**\n"
+                f"📝 Причина: {reason}"
+            ),
+            view=view,
+        )
+
+        # Сповістити гравця в ЛС
+        target = bot.get_user(self.target_did)
+        if target:
+            try:
+                await target.send(
+                    f"🎁 **Тобі нарахована премія!**\n\n"
+                    f"💵 Сума: **${amount:,}**\n"
+                    f"📝 Причина: {reason}\n"
+                    f"👤 Від: {caller['game_name']}"
+                )
+            except Exception:
+                pass
+
+        await notify(
+            f"🎁 **Премія видана**\n\n"
+            f"👤 Гравець: {self.target_name}\n"
+            f"💵 Сума: **${amount:,}**\n"
+            f"📝 Причина: {reason}\n"
+            f"🎖️ Видав: {caller['game_name']}"
+        )
+
+
+# =========================================================
+# TOP LEADERBOARD
+# =========================================================
+class TopSelectView(OwnedView):
+    @discord.ui.button(label="🕰 За весь час", style=discord.ButtonStyle.blurple)
+    async def alltime(self, interaction: discord.Interaction, _):
+        rows = await get_top_alltime(10)
+        if not rows:
+            await interaction.response.edit_message(
+                content="Даних поки немає.", view=BackView(interaction.user.id)
+            )
+            return
+        medal = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
+        lines = "\n".join(
+            f"{medal[i] if i < len(medal) else '▸'} **{r['game_name']}** — "
+            f"${r['total_earned']:,} | {r['contracts_count']} контр."
+            for i, r in enumerate(rows)
+        )
+        total = sum(r["total_earned"] for r in rows)
+        await interaction.response.edit_message(
+            content=(
+                "╔══════════════════════╗\n"
+                "   🏆 **ТОП — ЗА ВСЬ ЧАС**\n"
+                "╚══════════════════════╝\n\n"
+                f"{lines}\n\n"
+                f"💵 Загальний заробіток топу: **${total:,}**"
+            ),
+            view=BackView(interaction.user.id),
+        )
+
+    @discord.ui.button(label="📅 За тиждень", style=discord.ButtonStyle.blurple)
+    async def weekly(self, interaction: discord.Interaction, _):
+        rows = await get_top_weekly(10)
+        start, end = get_week_bounds()
+        start_dt = datetime.fromisoformat(start).strftime("%d.%m")
+        end_dt = (datetime.fromisoformat(end) - timedelta(days=1)).strftime("%d.%m")
+        fund = await get_weekly_family_fund()
+
+        active = [r for r in rows if r["week_earned"] > 0]
+        if not active:
+            await interaction.response.edit_message(
+                content=(
+                    "╔══════════════════════╗\n"
+                    f"  📅 **ТОП {start_dt}–{end_dt}**\n"
+                    "╚══════════════════════╝\n\n"
+                    "😔 Цього тижня контрактів ще не виконано."
+                ),
+                view=BackView(interaction.user.id),
+            )
+            return
+
+        medal = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
+        lines = "\n".join(
+            f"{medal[i] if i < len(medal) else '▸'} **{r['game_name']}** — "
+            f"${r['week_earned']:,} | {r['week_contracts']} контр."
+            for i, r in enumerate(active)
+        )
+        await interaction.response.edit_message(
+            content=(
+                "╔══════════════════════╗\n"
+                f"  📅 **ТОП {start_dt}–{end_dt}**\n"
+                "╚══════════════════════╝\n\n"
+                f"{lines}\n\n"
+                f"🏦 Фонд тижня: **${fund:,}**"
+            ),
+            view=BackView(interaction.user.id),
+        )
+
+    @discord.ui.button(label="⬅️ Назад", style=discord.ButtonStyle.secondary)
+    async def back(self, interaction: discord.Interaction, _):
+        await send_main_menu(interaction, edit=True)
+
+
+# =========================================================
+# DONATE MODAL
+# =========================================================
+class DonateModal(discord.ui.Modal, title="Донат сім'ї"):
+    amount_field = discord.ui.TextInput(
+        label="Сума донату", placeholder="1000", min_length=1, max_length=10
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        u = await user_by_did(interaction.user.id)
+        try:
+            amount = int(self.amount_field.value.strip())
+        except ValueError:
+            await interaction.response.send_message("Введи суму числом", ephemeral=True)
+            return
+        if amount <= 0:
+            await interaction.response.send_message("Сума > 0", ephemeral=True)
+            return
+        if amount > u["balance"]:
+            await interaction.response.send_message(
+                f"❌ Недостатньо коштів. Баланс: ${u['balance']:,}", ephemeral=True
+            )
+            return
+
+        await add_to_family_balance(amount)
+        async with db() as cx:
+            await cx.execute(
+                "UPDATE users SET balance=balance-? WHERE discord_id=? AND is_active=1",
+                (amount, u["discord_id"]),
+            )
+            await cx.commit()
+
+        bal = await family_balance()
+        view = MainMenuView(interaction.user.id, u["rank"])
+        await interaction.response.send_message(
+            f"💎 Дякуємо за донат **${amount:,}** сім'ї!\n"
+            f"🏦 Баланс сім'ї тепер: **${bal:,}**\n\n👇 Головне меню:",
+            view=view, ephemeral=True,
+        )
+        await notify(
+            f"💎 **Донат сім'ї**\n\n"
+            f"👤 {u['game_name']} задонатив **${amount:,}**\n"
+            f"🏦 Баланс сім'ї: **${bal:,}**"
+        )
+
+
+# =========================================================
+# FAMILY BALANCE VIEW (перегляд + редагування для ранг 10)
+# =========================================================
+class FamilyBalanceView(OwnedView):
+    def __init__(self, owner_id: int, caller_rank: int):
+        super().__init__(owner_id)
+        self.caller_rank = caller_rank
+
+        if caller_rank >= 10:
+            edit_btn = discord.ui.Button(
+                label="✏️ Редагувати баланс", style=discord.ButtonStyle.primary
+            )
+            edit_btn.callback = self._on_edit
+            self.add_item(edit_btn)
+
+        back_btn = discord.ui.Button(
+            label="⬅️ Назад", style=discord.ButtonStyle.secondary
+        )
+        back_btn.callback = self._on_back
+        self.add_item(back_btn)
+
+    async def _on_edit(self, interaction: discord.Interaction):
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message("Не твоє меню", ephemeral=True)
+            return
+        caller = await user_by_did(interaction.user.id)
+        if not caller or caller["rank"] < 10:
+            await interaction.response.send_message("Тільки для рангу 10", ephemeral=True)
+            return
+        await interaction.response.send_modal(EditFamilyBalanceModal())
+
+    async def _on_back(self, interaction: discord.Interaction):
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message("Не твоє меню", ephemeral=True)
+            return
+        u = await user_by_did(interaction.user.id)
+        view = AdminMenuView(interaction.user.id, u["rank"] if u else self.caller_rank)
+        await interaction.response.edit_message(content="🛠 **Адмін-панель:**", view=view)
+
+
+class EditFamilyBalanceModal(discord.ui.Modal, title="Редагувати баланс сім'ї"):
+    new_balance = discord.ui.TextInput(
+        label="Новий баланс сім'ї (число)", min_length=1, max_length=12
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        caller = await user_by_did(interaction.user.id)
+        if not caller or caller["rank"] < 10:
+            await interaction.response.send_message("Тільки для рангу 10", ephemeral=True)
+            return
+        try:
+            new_bal = int(self.new_balance.value.strip())
+        except ValueError:
+            await interaction.response.send_message("Введи число", ephemeral=True)
+            return
+        if new_bal < 0:
+            await interaction.response.send_message("Баланс не може бути від'ємним", ephemeral=True)
+            return
+
+        old_bal = await family_balance()
+        await set_family_balance(new_bal)
+
+        u = await user_by_did(interaction.user.id)
+        view = BackToAdminView(interaction.user.id, caller["rank"])
+        await interaction.response.edit_message(
+            content=(
+                f"✅ Баланс сім'ї оновлено\n\n"
+                f"Було: **${old_bal:,}**\n"
+                f"Стало: **${new_bal:,}**"
+            ),
+            view=view,
+        )
+        await notify(
+            f"✏️ Баланс сім'ї змінено\n"
+            f"Було: ${old_bal:,} → Стало: ${new_bal:,}\n"
+            f"Змінив: {caller['game_name']}"
+        )
+
+
+# =========================================================
+# WEEKLY PAYOUT LOGIC
+# =========================================================
+async def do_weekly_payout():
+    """Автовиплата щонеділі. Викликається о 00:00 UTC кожної неділі."""
+    start, end = get_week_bounds()
+    # Беремо тиждень що щойно закінчився (попередній)
+    now = datetime.now(timezone.utc)
+    prev_end = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    prev_start = (prev_end - timedelta(days=7)).isoformat()
+    prev_end_str = prev_end.isoformat()
+
+    async with db() as cx:
+        cx.row_factory = aiosqlite.Row
+        row = await (await cx.execute("""
+            SELECT COALESCE(SUM(family_amount), 0) as total
+            FROM completed_contracts
+            WHERE created_at >= ? AND created_at < ?
+        """, (prev_start, prev_end_str))).fetchone()
+        weekly_fund = row["total"] if row else 0
+
+    if weekly_fund == 0:
+        await notify("📊 Тижнева виплата: фонд порожній, виплат немає.")
+        return
+
+    # 50% залишається сім'ї, 50% розподіляється
+    distribute = weekly_fund // 2
+    family_keeps = weekly_fund - distribute
+
+    # Топ гравців за тиждень
+    async with db() as cx:
+        cx.row_factory = aiosqlite.Row
+        players = await (await cx.execute("""
+            SELECT u.discord_id, u.game_name,
+                   COALESCE(SUM(ccp.payout_amount), 0) as week_earned
+            FROM users u
+            LEFT JOIN completed_contract_participants ccp ON ccp.discord_id = u.discord_id
+            LEFT JOIN completed_contracts cc ON cc.id = ccp.completed_contract_id
+                AND cc.created_at >= ? AND cc.created_at < ?
+            WHERE u.is_active = 1
+            GROUP BY u.discord_id
+            ORDER BY week_earned DESC
+        """, (prev_start, prev_end_str))).fetchall()
+
+    players = [dict(p) for p in players]
+    active_players = [p for p in players if p["week_earned"] > 0]
+
+    if not active_players:
+        await notify("📊 Тижнева виплата: ніхто не виконував контракти цього тижня.")
+        return
+
+    top5 = active_players[:5]
+    others = active_players[5:]
+
+    # Розподіл серед топ-5: 35% від distribute
+    top5_fund = int(distribute * 0.35)
+    top5_percents = [0.14, 0.08, 0.05, 0.04, 0.04]  # % від distribute (не від top5_fund)
+    top5_payouts = []
+    for i, p in enumerate(top5):
+        pct = top5_percents[i] if i < len(top5_percents) else 0
+        payout = int(distribute * pct)
+        await add_to_balance(p["discord_id"], payout)
+        top5_payouts.append((p["game_name"], payout))
+
+    # Решта 15% — між іншими пропорційно
+    others_fund = int(distribute * 0.15)
+    others_total_earned = sum(p["week_earned"] for p in others)
+    others_payouts = []
+    if others and others_total_earned > 0:
+        for p in others:
+            payout = int(others_fund * p["week_earned"] / others_total_earned)
+            if payout > 0:
+                await add_to_balance(p["discord_id"], payout)
+                others_payouts.append(payout)
+
+    others_total_payout = sum(others_payouts)
+
+    # Сповіщення в канал
+    medal = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
+    top_lines = "\n".join(
+        f"{medal[i]} **{name}** — ${payout:,}"
+        for i, (name, payout) in enumerate(top5_payouts)
+    )
+    others_line = f"\n👥 Решта учасників отримали разом: **${others_total_payout:,}**" if others_payouts else ""
+
+    msg = (
+        "╔══════════════════════╗\n"
+        "   💰 **ТИЖНЕВА ВИПЛАТА**\n"
+        "╚══════════════════════╝\n\n"
+        f"📊 Фонд тижня: **${weekly_fund:,}**\n"
+        f"🏦 Залишається сім'ї: **${family_keeps:,}**\n"
+        f"💸 Розподілено: **${distribute:,}**\n\n"
+        f"🏆 **ТОП-5 ТИЖНЯ:**\n{top_lines}"
+        f"{others_line}"
+    )
+    await notify(msg)
+    print(f"✅ Тижнева виплата виконана. Фонд: ${weekly_fund:,}")
+
+
+async def weekly_payout_loop():
+    """Фоновий цикл — чекає до наступної неділі 00:00 UTC."""
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        now = datetime.now(timezone.utc)
+        # Наступна неділя 00:00 UTC
+        days_until_sunday = (6 - now.weekday()) % 7
+        if days_until_sunday == 0 and now.hour == 0 and now.minute < 5:
+            # Зараз неділя і ще не минуло 5 хвилин — виплачуємо
+            await do_weekly_payout()
+            await asyncio.sleep(360)  # чекаємо 6 хвилин щоб не виплатити двічі
+        else:
+            if days_until_sunday == 0:
+                days_until_sunday = 7
+            next_sunday = (now + timedelta(days=days_until_sunday)).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
+            seconds_until = (next_sunday - now).total_seconds()
+            print(f"⏰ Наступна тижнева виплата через {seconds_until/3600:.1f} годин")
+            await asyncio.sleep(min(seconds_until, 3600))  # перевіряємо кожну годину
+
+
+# =========================================================
 # ON READY
 # =========================================================
 @bot.event
@@ -2120,9 +2694,11 @@ async def on_ready():
             await cx.execute("UPDATE users SET rank=10 WHERE discord_id=?", (oid,))
             await cx.commit()
     await tree.sync()
+    bot.loop.create_task(weekly_payout_loop())
     print(f"✅ Бот запущено як {bot.user}")
     print("✅ Slash-команди синхронізовано")
     print("✅ Пиши /start у будь-якому каналі сервера")
+    print("✅ Тижневий таск запущено")
 
 
 # =========================================================
