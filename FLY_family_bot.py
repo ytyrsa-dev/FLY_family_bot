@@ -303,7 +303,7 @@ async def create_completed_contract(ct_id: int, creator_did: int, sids: list[str
         parts.append(u)
 
     total = ct["price"]
-    fam = int(total * 0.40)
+    fam = int(total * 0.10)
     per = (total - fam) // len(parts)
     ptxt = ", ".join(f'{u["game_name"]} ({u["static_id"]})' for u in parts)
 
@@ -726,32 +726,49 @@ class WithdrawModal(discord.ui.Modal, title="Запит на вивід"):
             return
         if amount > u["balance"]:
             await interaction.response.send_message(
-                f"❌ Баланс: {u['balance']}. Недостатньо.", ephemeral=True
+                f"❌ Баланс: ${u['balance']:,}. Недостатньо.", ephemeral=True
             )
             return
+
+        # Одразу списуємо з балансу
+        await deduct_balance(u["discord_id"], amount)
+
         wid = await create_wd(u["discord_id"], u["game_name"], amount)
+
         view = MainMenuView(interaction.user.id, u["rank"])
         await interaction.response.send_message(
-            f"✅ Заявка **#{wid}** на вивід **{amount}** відправлена.\n\n👇 Головне меню:",
+            f"✅ Заявка **#{wid}** на вивід **${amount:,}** відправлена адміністратору.\n"
+            f"💵 Сума вже списана з балансу.\n\n👇 Головне меню:",
             view=view, ephemeral=True,
         )
+
+        # Відправити запит особисто кожному адміну в ЛС
         wd_view = WithdrawalAdminView(wid)
-        await notify(
-            f"💸 Нова заявка на вивід **#{wid}**\nГравець: {u['game_name']}\nСума: {amount}",
-            view=wd_view,
+        msg_text = (
+            f"💸 **Новий запит на вивід #{wid}**\n\n"
+            f"👤 Гравець: **{u['game_name']}**\n"
+            f"💵 Сума: **${amount:,}**\n\n"
+            f"Схвали або відхили заявку:"
         )
+        for admin_id in ADMIN_IDS:
+            admin_user = bot.get_user(admin_id)
+            if admin_user:
+                try:
+                    await admin_user.send(msg_text, view=wd_view)
+                except Exception:
+                    pass
 
 
 # =========================================================
-# WITHDRAWAL ADMIN VIEW (в каналі сповіщень)
+# WITHDRAWAL ADMIN VIEW (в ЛС адміну)
 # =========================================================
 class WithdrawalAdminView(discord.ui.View):
-    """Кнопки у каналі сповіщень — без обмеження owner."""
+    """Кнопки в ЛС адміна — без обмеження owner."""
     def __init__(self, wid: int):
         super().__init__(timeout=None)
         self.wid = wid
 
-    @discord.ui.button(label="✅ Схвалити", style=discord.ButtonStyle.green)
+    @discord.ui.button(label="✅ Підтвердити вивід", style=discord.ButtonStyle.green)
     async def approve(self, interaction: discord.Interaction, _):
         rev = await user_by_did(interaction.user.id)
         if not rev or rev["rank"] < 8:
@@ -759,16 +776,28 @@ class WithdrawalAdminView(discord.ui.View):
             return
         req = await wd_by_id(self.wid)
         if not req or req["status"] != "new":
-            await interaction.response.send_message(f"Вже оброблено: {req['status'] if req else '?'}", ephemeral=True)
+            await interaction.response.send_message(
+                f"Вже оброблено: {req['status'] if req else '?'}", ephemeral=True
+            )
             return
         await wd_set_status(self.wid, "approved", rev["discord_id"])
         await interaction.response.edit_message(
-            content=interaction.message.content + f"\n✅ Схвалено: {rev['game_name']}", view=None
+            content=(
+                f"✅ **Заявка #{self.wid} підтверджена**\n\n"
+                f"👤 {req['game_name']} | 💵 ${req['amount']:,}\n"
+                f"Підтвердив: {rev['game_name']}"
+            ),
+            view=None,
         )
+        # Сповістити гравця в ЛС
         target = bot.get_user(req["discord_id"])
         if target:
             try:
-                await target.send(f"✅ Заявку на вивід **#{self.wid}** схвалено!")
+                await target.send(
+                    f"✅ **Твій запит на вивід підтверджено!**\n\n"
+                    f"💵 Сума: **${req['amount']:,}**\n"
+                    f"Адміністратор підтвердив виплату."
+                )
             except Exception:
                 pass
 
@@ -783,45 +812,33 @@ class WithdrawalAdminView(discord.ui.View):
             await interaction.response.send_message("Вже оброблено", ephemeral=True)
             return
         await wd_set_status(self.wid, "rejected", rev["discord_id"])
-        await interaction.response.edit_message(
-            content=interaction.message.content + f"\n❌ Відхилено: {rev['game_name']}", view=None
-        )
-        target = bot.get_user(req["discord_id"])
-        if target:
-            try:
-                await target.send(f"❌ Заявку на вивід **#{self.wid}** відхилено.")
-            except Exception:
-                pass
 
-    @discord.ui.button(label="💵 Виплачено", style=discord.ButtonStyle.blurple)
-    async def paid(self, interaction: discord.Interaction, _):
-        rev = await user_by_did(interaction.user.id)
-        if not rev or rev["rank"] < 9:
-            await interaction.response.send_message("Нема доступу (ранг 9+)", ephemeral=True)
-            return
-        req = await wd_by_id(self.wid)
-        if not req:
-            await interaction.response.send_message("Заявку не знайдено", ephemeral=True)
-            return
-        if req["status"] == "paid":
-            await interaction.response.send_message("Вже виплачено", ephemeral=True)
-            return
-        if req["status"] != "approved":
-            await interaction.response.send_message("Спочатку схваліть", ephemeral=True)
-            return
-        player = await user_by_did(req["discord_id"])
-        if not player or player["balance"] < req["amount"]:
-            await interaction.response.send_message("Недостатньо балансу у гравця", ephemeral=True)
-            return
-        await deduct_balance(req["discord_id"], req["amount"])
-        await wd_set_paid(self.wid, rev["discord_id"])
+        # Повернути гроші гравцю
+        async with db() as cx:
+            await cx.execute(
+                "UPDATE users SET balance=balance+? WHERE discord_id=? AND is_active=1",
+                (req["amount"], req["discord_id"]),
+            )
+            await cx.commit()
+
         await interaction.response.edit_message(
-            content=interaction.message.content + f"\n💵 Виплачено: {rev['game_name']}", view=None
+            content=(
+                f"❌ **Заявка #{self.wid} відхилена**\n\n"
+                f"👤 {req['game_name']} | 💵 ${req['amount']:,}\n"
+                f"Відхилив: {rev['game_name']}\n"
+                f"💰 Кошти повернуто гравцю."
+            ),
+            view=None,
         )
+        # Сповістити гравця в ЛС
         target = bot.get_user(req["discord_id"])
         if target:
             try:
-                await target.send(f"💵 Заявку **#{self.wid}** відмічено як виплачену.")
+                await target.send(
+                    f"❌ **Твій запит на вивід відхилено.**\n\n"
+                    f"💵 Сума: **${req['amount']:,}**\n"
+                    f"💰 Кошти повернуто на твій баланс."
+                )
             except Exception:
                 pass
 
@@ -1979,18 +1996,13 @@ class WithdrawalListView(OwnedView):
             self.add_item(next_btn)
 
         if row["status"] == "new":
-            approve = discord.ui.Button(label="✅ Схвалити", style=discord.ButtonStyle.green, row=1)
+            approve = discord.ui.Button(label="✅ Підтвердити", style=discord.ButtonStyle.green, row=1)
             approve.callback = self._on_approve
             self.add_item(approve)
 
             reject = discord.ui.Button(label="❌ Відхилити", style=discord.ButtonStyle.red, row=1)
             reject.callback = self._on_reject
             self.add_item(reject)
-
-        if row["status"] == "approved":
-            paid = discord.ui.Button(label="💵 Відмітити виплаченим", style=discord.ButtonStyle.blurple, row=1)
-            paid.callback = self._on_paid
-            self.add_item(paid)
 
         back = discord.ui.Button(label="⬅️ Назад", style=discord.ButtonStyle.secondary, row=2)
         back.callback = self._on_back
@@ -2047,7 +2059,11 @@ class WithdrawalListView(OwnedView):
         target = bot.get_user(row["discord_id"])
         if target:
             try:
-                await target.send(f"✅ Твою заявку на вивід **#{row['id']}** на суму **{row['amount']}** схвалено!")
+                await target.send(
+                    f"✅ **Твій запит на вивід підтверджено!**\n\n"
+                    f"💵 Сума: **${row['amount']:,}**\n"
+                    f"Адміністратор підтвердив виплату."
+                )
             except Exception:
                 pass
 
@@ -2061,38 +2077,26 @@ class WithdrawalListView(OwnedView):
             return
         row = self.rows[self.page]
         await wd_set_status(row["id"], "rejected", rev["discord_id"])
+
+        # Повернути гроші гравцю
+        async with db() as cx:
+            await cx.execute(
+                "UPDATE users SET balance=balance+? WHERE discord_id=? AND is_active=1",
+                (row["amount"], row["discord_id"]),
+            )
+            await cx.commit()
+
         self.rows[self.page]["status"] = "rejected"
         self._build()
         await interaction.response.edit_message(content=self._current_content(), view=self)
         target = bot.get_user(row["discord_id"])
         if target:
             try:
-                await target.send(f"❌ Твою заявку на вивід **#{row['id']}** на суму **{row['amount']}** відхилено.")
-            except Exception:
-                pass
-
-    async def _on_paid(self, interaction: discord.Interaction):
-        if interaction.user.id != self.owner_id:
-            await interaction.response.send_message("Не твоє меню", ephemeral=True)
-            return
-        rev = await user_by_did(interaction.user.id)
-        if not rev or rev["rank"] < 9:
-            await interaction.response.send_message("Нема доступу (ранг 9+)", ephemeral=True)
-            return
-        row = self.rows[self.page]
-        player = await user_by_did(row["discord_id"])
-        if not player or player["balance"] < row["amount"]:
-            await interaction.response.send_message("Недостатньо балансу у гравця", ephemeral=True)
-            return
-        await deduct_balance(row["discord_id"], row["amount"])
-        await wd_set_paid(row["id"], rev["discord_id"])
-        self.rows[self.page]["status"] = "paid"
-        self._build()
-        await interaction.response.edit_message(content=self._current_content(), view=self)
-        target = bot.get_user(row["discord_id"])
-        if target:
-            try:
-                await target.send(f"💵 Твою заявку на вивід **#{row['id']}** на суму **{row['amount']}** виплачено!")
+                await target.send(
+                    f"❌ **Твій запит на вивід відхилено.**\n\n"
+                    f"💵 Сума: **${row['amount']:,}**\n"
+                    f"💰 Кошти повернуто на твій баланс."
+                )
             except Exception:
                 pass
 
