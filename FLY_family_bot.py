@@ -303,7 +303,7 @@ async def create_completed_contract(ct_id: int, creator_did: int, sids: list[str
         parts.append(u)
 
     total = ct["price"]
-    fam = int(total * 0.10)
+    fam = int(total * 0.40)
     per = (total - fam) // len(parts)
     ptxt = ", ".join(f'{u["game_name"]} ({u["static_id"]})' for u in parts)
 
