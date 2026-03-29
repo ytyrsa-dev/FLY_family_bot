@@ -1295,6 +1295,19 @@ class EditPlayerPickView(OwnedView):
 
 
 class EditPlayerModal(discord.ui.Modal, title="Редагувати гравця"):
+    game_name_f = discord.ui.TextInput(
+        label="Ігрове ім'я (Ім'я Прізвище)", min_length=3, max_length=50
+    )
+    real_name_f = discord.ui.TextInput(
+        label="Реальне ім'я", min_length=1, max_length=50
+    )
+    rank_f = discord.ui.TextInput(
+        label="Ранг (1-10)", min_length=1, max_length=2
+    )
+    balance_f = discord.ui.TextInput(
+        label="Баланс (тільки ранг 9+)", min_length=1, max_length=12
+    )
+
     def __init__(self, owner_id: int, caller_rank: int, db_user: dict, member):
         super().__init__()
         self.owner_id = owner_id
@@ -1302,30 +1315,11 @@ class EditPlayerModal(discord.ui.Modal, title="Редагувати гравця
         self.db_user = db_user
         self.member = member
 
-        self.game_name_f = discord.ui.TextInput(
-            label="Ігрове ім'я (Ім'я Прізвище)",
-            default=db_user["game_name"],
-            min_length=3, max_length=50,
-        )
-        self.real_name_f = discord.ui.TextInput(
-            label="Реальне ім'я",
-            default=db_user["real_name"],
-            min_length=1, max_length=50,
-        )
-        self.rank_f = discord.ui.TextInput(
-            label="Ранг (1-10)",
-            default=str(db_user["rank"]),
-            min_length=1, max_length=2,
-        )
-        self.balance_f = discord.ui.TextInput(
-            label="Баланс (тільки ранг 9+)",
-            default=str(db_user["balance"]),
-            min_length=1, max_length=12,
-        )
-        self.add_item(self.game_name_f)
-        self.add_item(self.real_name_f)
-        self.add_item(self.rank_f)
-        self.add_item(self.balance_f)
+        # Заповнюємо поточними значеннями
+        self.game_name_f.default = db_user["game_name"]
+        self.real_name_f.default = db_user["real_name"]
+        self.rank_f.default = str(db_user["rank"])
+        self.balance_f.default = str(db_user["balance"])
 
     async def on_submit(self, interaction: discord.Interaction):
         caller = await user_by_did(interaction.user.id)
@@ -1349,7 +1343,7 @@ class EditPlayerModal(discord.ui.Modal, title="Редагувати гравця
         if not 1 <= new_rank <= 10:
             await interaction.response.send_message("Ранг 1-10", ephemeral=True)
             return
-        if new_rank >= caller["rank"]:
+        if new_rank >= caller["rank"] and caller["rank"] < 10:
             await interaction.response.send_message("Не можна виставити ранг ≥ своєму", ephemeral=True)
             return
         if new_balance < 0:
@@ -1616,8 +1610,8 @@ class AdminMenuView(OwnedView):
 
     @discord.ui.button(label="✏️ Редагувати гравця", style=discord.ButtonStyle.secondary, row=0)
     async def edit_player_btn(self, interaction: discord.Interaction, _):
-        if self.rank < 6:
-            await interaction.response.send_message("Нема доступу (ранг 6+)", ephemeral=True)
+        if self.rank < 9:
+            await interaction.response.send_message("Нема доступу (ранг 9+)", ephemeral=True)
             return
         view = EditPlayerPickView(interaction.user.id, self.rank)
         await interaction.response.edit_message(
@@ -1627,8 +1621,8 @@ class AdminMenuView(OwnedView):
 
     @discord.ui.button(label="💳 Заявки на вивід", style=discord.ButtonStyle.blurple, row=0)
     async def wd_list(self, interaction: discord.Interaction, _):
-        if self.rank < 8:
-            await interaction.response.send_message("Нема доступу (ранг 8+)", ephemeral=True)
+        if self.rank < 9:
+            await interaction.response.send_message("Нема доступу (ранг 9+)", ephemeral=True)
             return
         rows = await all_wd(20)
         if not rows:
@@ -1655,8 +1649,8 @@ class AdminMenuView(OwnedView):
 
     @discord.ui.button(label="🏦 Баланс сім'ї", style=discord.ButtonStyle.secondary, row=1)
     async def fam_bal(self, interaction: discord.Interaction, _):
-        if self.rank < 8:
-            await interaction.response.send_message("Нема доступу (ранг 8+)", ephemeral=True)
+        if self.rank < 9:
+            await interaction.response.send_message("Нема доступу (ранг 9+)", ephemeral=True)
             return
         bal = await family_balance()
         view = FamilyBalanceView(interaction.user.id, self.rank)
@@ -1672,14 +1666,17 @@ class AdminMenuView(OwnedView):
 
     @discord.ui.button(label="🎁 Видати премію", style=discord.ButtonStyle.green, row=1)
     async def give_bonus(self, interaction: discord.Interaction, _):
-        if self.rank < 9:
-            await interaction.response.send_message("Нема доступу (ранг 9+)", ephemeral=True)
+        if self.rank < 10:
+            await interaction.response.send_message("Нема доступу (ранг 10)", ephemeral=True)
             return
         view = BonusUserPickView(interaction.user.id, self.rank)
         await interaction.response.edit_message(
             content="🎁 **Видати премію**\n\nВибери гравця через @:",
             view=view,
         )
+
+    @discord.ui.button(label="🎭 Видати роль", style=discord.ButtonStyle.secondary, row=1)
+    async def give_role(self, interaction: discord.Interaction, _):
         if self.rank < 6:
             await interaction.response.send_message("Нема доступу (ранг 6+)", ephemeral=True)
             return
@@ -1690,22 +1687,22 @@ class AdminMenuView(OwnedView):
 
     @discord.ui.button(label="➕ Додати контракт", style=discord.ButtonStyle.green, row=2)
     async def add_ct(self, interaction: discord.Interaction, _):
-        if self.rank < 8:
-            await interaction.response.send_message("Нема доступу (ранг 8+)", ephemeral=True)
+        if self.rank < 9:
+            await interaction.response.send_message("Нема доступу (ранг 9+)", ephemeral=True)
             return
         await interaction.response.send_modal(AddContractTypeModal())
 
-    @discord.ui.button(label="🗑 Видалити контракт", style=discord.ButtonStyle.red, row=2)
+    @discord.ui.button(label="🗑 Видалити тип контракту", style=discord.ButtonStyle.red, row=2)
     async def del_ct(self, interaction: discord.Interaction, _):
-        if self.rank < 8:
-            await interaction.response.send_message("Нема доступу (ранг 8+)", ephemeral=True)
+        if self.rank < 9:
+            await interaction.response.send_message("Нема доступу (ранг 9+)", ephemeral=True)
             return
         await interaction.response.send_modal(DeleteContractTypeModal())
 
     @discord.ui.button(label="✏️ Змінити контракт", style=discord.ButtonStyle.secondary, row=3)
     async def edit_cc(self, interaction: discord.Interaction, _):
-        if self.rank < 8:
-            await interaction.response.send_message("Нема доступу (ранг 8+)", ephemeral=True)
+        if self.rank < 9:
+            await interaction.response.send_message("Нема доступу (ранг 9+)", ephemeral=True)
             return
         view = EditContractView(interaction.user.id, self.rank)
         await interaction.response.edit_message(
@@ -1713,14 +1710,7 @@ class AdminMenuView(OwnedView):
             view=view,
         )
 
-    @discord.ui.button(label="🗑 Видалити виконаний", style=discord.ButtonStyle.red, row=3)
-    async def del_cc(self, interaction: discord.Interaction, _):
-        if self.rank < 8:
-            await interaction.response.send_message("Нема доступу (ранг 8+)", ephemeral=True)
-            return
-        await interaction.response.send_modal(DeleteContractModal())
-
-    @discord.ui.button(label="🚫 Видалити гравця", style=discord.ButtonStyle.red, row=4)
+    @discord.ui.button(label="🚫 Видалити гравця", style=discord.ButtonStyle.red, row=3)
     async def del_player(self, interaction: discord.Interaction, _):
         if self.rank < 10:
             await interaction.response.send_message("Нема доступу (тільки ранг 10)", ephemeral=True)
@@ -1831,7 +1821,7 @@ class RankPickView(OwnedView):
         # Генеруємо кнопки для рангів нижче caller_rank
         opts = [
             discord.SelectOption(label=rank_label(r), value=str(r))
-            for r in range(1, caller_rank)  # тільки ранги нижче свого
+            for r in range(1, caller_rank + 1 if caller_rank >= 10 else caller_rank)  # ранг 10 може виставляти будь-який
         ]
         if opts:
             sel = discord.ui.Select(placeholder="Вибери ранг...", options=opts)
