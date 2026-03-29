@@ -379,7 +379,7 @@ async def replace_contract_participants(cid: int, new_sids: list[str]):
             parts.append(u)
 
         total = cc["total_amount"]
-        fam = int(total * 0.10)
+        fam = int(total * 0.40)
         per = (total - fam) // len(parts)
 
         for u in parts:
@@ -1034,7 +1034,7 @@ class ParticipantsView(OwnedView):
             return
 
         total = s["ct_price"]
-        fam = int(total * 0.10)
+        fam = int(total * 0.40)
         per = (total - fam) // len(ids)
         names_txt = "\n".join(f"• {n}" for n in s["p_names"])
 
