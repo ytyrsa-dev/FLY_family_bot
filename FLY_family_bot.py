@@ -308,37 +308,33 @@ def get_week_bounds() -> tuple[str, str]:
 
 
 async def get_top_alltime(limit: int = 10):
-    """Топ гравців за всіма часами — за кількістю контрактів і сумою."""
+    """Топ гравців за всіма часами — за кількістю контрактів."""
     async with db() as cx:
         cx.row_factory = aiosqlite.Row
         return await (await cx.execute("""
-            SELECT u.game_name, u.static_id, u.contracts_count,
-                   COALESCE(SUM(ccp.payout_amount), 0) as total_earned
+            SELECT u.game_name, u.static_id, u.contracts_count
             FROM users u
-            LEFT JOIN completed_contract_participants ccp ON ccp.discord_id = u.discord_id
             WHERE u.is_active = 1
-            GROUP BY u.discord_id
-            ORDER BY total_earned DESC, u.contracts_count DESC
+            ORDER BY u.contracts_count DESC
             LIMIT ?
         """, (limit,))).fetchall()
 
 
 async def get_top_weekly(limit: int = 10):
-    """Топ гравців за поточний тиждень (Нд→Нд)."""
+    """Топ гравців за поточний тиждень — за кількістю контрактів."""
     start, end = get_week_bounds()
     async with db() as cx:
         cx.row_factory = aiosqlite.Row
         return await (await cx.execute("""
             SELECT u.game_name, u.static_id,
-                   COUNT(ccp.id) as week_contracts,
-                   COALESCE(SUM(ccp.payout_amount), 0) as week_earned
+                   COUNT(ccp.id) as week_contracts
             FROM users u
             LEFT JOIN completed_contract_participants ccp ON ccp.discord_id = u.discord_id
             LEFT JOIN completed_contracts cc ON cc.id = ccp.completed_contract_id
                 AND cc.created_at >= ? AND cc.created_at < ?
             WHERE u.is_active = 1
             GROUP BY u.discord_id
-            ORDER BY week_earned DESC, week_contracts DESC
+            ORDER BY week_contracts DESC
             LIMIT ?
         """, (start, end, limit))).fetchall()
 
@@ -357,19 +353,19 @@ async def get_weekly_family_fund() -> int:
 
 
 async def get_all_active_users_with_weekly(start: str, end: str):
-    """Всі активні гравці з їх тижневим заробітком."""
+    """Всі активні гравці з їх тижневою кількістю контрактів."""
     async with db() as cx:
         cx.row_factory = aiosqlite.Row
         return await (await cx.execute("""
             SELECT u.discord_id, u.game_name, u.static_id,
-                   COALESCE(SUM(ccp.payout_amount), 0) as week_earned
+                   COUNT(ccp.id) as week_contracts
             FROM users u
             LEFT JOIN completed_contract_participants ccp ON ccp.discord_id = u.discord_id
             LEFT JOIN completed_contracts cc ON cc.id = ccp.completed_contract_id
                 AND cc.created_at >= ? AND cc.created_at < ?
             WHERE u.is_active = 1
             GROUP BY u.discord_id
-            ORDER BY week_earned DESC
+            ORDER BY week_contracts DESC
         """, (start, end))).fetchall()
 
 
@@ -2592,20 +2588,26 @@ class TopSelectView(OwnedView):
                 content="Даних поки немає.", view=BackView(interaction.user.id)
             )
             return
+        active = [r for r in rows if r["contracts_count"] > 0]
+        if not active:
+            await interaction.response.edit_message(
+                content="😔 Ще ніхто не виконав жодного контракту.",
+                view=BackView(interaction.user.id),
+            )
+            return
         medal = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
         lines = "\n".join(
-            f"{medal[i] if i < len(medal) else '▸'} **{r['game_name']}** — "
-            f"${r['total_earned']:,} | {r['contracts_count']} контр."
-            for i, r in enumerate(rows)
+            f"{medal[i] if i < len(medal) else '▸'} **{r['game_name']}** — {r['contracts_count']} контр."
+            for i, r in enumerate(active)
         )
-        total = sum(r["total_earned"] for r in rows)
+        total = sum(r["contracts_count"] for r in active)
         await interaction.response.edit_message(
             content=(
                 "╔══════════════════════╗\n"
                 "   🏆 **ТОП — ЗА ВСЬ ЧАС**\n"
                 "╚══════════════════════╝\n\n"
                 f"{lines}\n\n"
-                f"💵 Загальний заробіток топу: **${total:,}**"
+                f"📋 Всього контрактів у топ-10: **{total}**"
             ),
             view=BackView(interaction.user.id),
         )
@@ -2618,7 +2620,7 @@ class TopSelectView(OwnedView):
         end_dt = (datetime.fromisoformat(end) - timedelta(days=1)).strftime("%d.%m")
         fund = await get_weekly_family_fund()
 
-        active = [r for r in rows if r["week_earned"] > 0]
+        active = [r for r in rows if r["week_contracts"] > 0]
         if not active:
             await interaction.response.edit_message(
                 content=(
@@ -2633,16 +2635,17 @@ class TopSelectView(OwnedView):
 
         medal = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
         lines = "\n".join(
-            f"{medal[i] if i < len(medal) else '▸'} **{r['game_name']}** — "
-            f"${r['week_earned']:,} | {r['week_contracts']} контр."
+            f"{medal[i] if i < len(medal) else '▸'} **{r['game_name']}** — {r['week_contracts']} контр."
             for i, r in enumerate(active)
         )
+        total_week = sum(r["week_contracts"] for r in active)
         await interaction.response.edit_message(
             content=(
                 "╔══════════════════════╗\n"
                 f"  📅 **ТОП {start_dt}–{end_dt}**\n"
                 "╚══════════════════════╝\n\n"
                 f"{lines}\n\n"
+                f"📋 Всього контрактів за тиждень: **{total_week}**\n"
                 f"🏦 Фонд тижня: **${fund:,}**"
             ),
             view=BackView(interaction.user.id),
@@ -2803,18 +2806,18 @@ async def build_payout_preview(prev_start: str, prev_end_str: str) -> dict | Non
         cx.row_factory = aiosqlite.Row
         players = await (await cx.execute("""
             SELECT u.discord_id, u.game_name,
-                   COALESCE(SUM(ccp.payout_amount), 0) as week_earned
+                   COUNT(ccp.id) as week_contracts
             FROM users u
             LEFT JOIN completed_contract_participants ccp ON ccp.discord_id = u.discord_id
             LEFT JOIN completed_contracts cc ON cc.id = ccp.completed_contract_id
                 AND cc.created_at >= ? AND cc.created_at < ?
             WHERE u.is_active = 1
             GROUP BY u.discord_id
-            ORDER BY week_earned DESC
+            ORDER BY week_contracts DESC
         """, (prev_start, prev_end_str))).fetchall()
 
     players = [dict(p) for p in players]
-    active_players = [p for p in players if p["week_earned"] > 0]
+    active_players = [p for p in players if p["week_contracts"] > 0]
     if not active_players:
         return None
 
@@ -2826,16 +2829,17 @@ async def build_payout_preview(prev_start: str, prev_end_str: str) -> dict | Non
     for i, p in enumerate(top5):
         pct = top5_percents[i] if i < len(top5_percents) else 0
         payout = int(distribute * pct)
-        top5_payouts.append({"discord_id": p["discord_id"], "game_name": p["game_name"], "payout": payout})
+        top5_payouts.append({"discord_id": p["discord_id"], "game_name": p["game_name"],
+                              "payout": payout, "contracts": p["week_contracts"]})
 
     others_fund = int(distribute * 0.15)
-    others_total_earned = sum(p["week_earned"] for p in others)
     others_payouts = []
-    if others and others_total_earned > 0:
-        for p in others:
-            payout = int(others_fund * p["week_earned"] / others_total_earned)
-            if payout > 0:
-                others_payouts.append({"discord_id": p["discord_id"], "game_name": p["game_name"], "payout": payout})
+    if others and others_fund > 0:
+        per_person = others_fund // len(others)
+        if per_person > 0:
+            for p in others:
+                others_payouts.append({"discord_id": p["discord_id"], "game_name": p["game_name"],
+                                       "payout": per_person, "contracts": p["week_contracts"]})
 
     total_to_distribute = sum(p["payout"] for p in top5_payouts) + sum(p["payout"] for p in others_payouts)
 
@@ -2876,7 +2880,7 @@ async def execute_payout(data: dict):
 def build_preview_text(data: dict) -> str:
     medal = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
     top_lines = "\n".join(
-        f"{medal[i]} **{p['game_name']}** — ${p['payout']:,}"
+        f"{medal[i]} **{p['game_name']}** — {p.get('contracts', '?')} контр. | ${p['payout']:,}"
         for i, p in enumerate(data["top5"])
     )
     others_lines = ""
@@ -2928,7 +2932,7 @@ class WeeklyPayoutConfirmView(discord.ui.View):
         # Публічне сповіщення в канал
         medal = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
         top_lines = "\n".join(
-            f"{medal[i]} **{p['game_name']}** — ${p['payout']:,}"
+            f"{medal[i]} **{p['game_name']}** — {p.get('contracts', '?')} контр. | ${p['payout']:,}"
             for i, p in enumerate(self.data["top5"])
         )
         others_lines = ""
