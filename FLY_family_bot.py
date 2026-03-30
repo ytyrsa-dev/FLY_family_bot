@@ -27,7 +27,8 @@ import os
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 ADMIN_IDS = {int(os.environ.get("ADMIN_IDS", "0"))}
 NOTIFY_CHANNEL_ID = int(os.environ.get("NOTIFY_CHANNEL_ID", "0"))
-GATHER_CHANNEL_ID = int(os.environ.get("GATHER_CHANNEL_ID", "0"))  # канал для збору на контракт
+GATHER_CHANNEL_ID = int(os.environ.get("GATHER_CHANNEL_ID", "0"))
+WELCOME_CHANNEL_ID = 1487848644781805789  # канал з кнопкою реєстрації
 
 RANK_NAMES = {
     1: "1 | Кандидат", 2: "2 | Резидент", 3: "3 | Оператор",
@@ -1305,7 +1306,10 @@ class EditPlayerModal(discord.ui.Modal, title="Редагувати гравця
         label="Ранг (1-10)", min_length=1, max_length=2
     )
     balance_f = discord.ui.TextInput(
-        label="Баланс (тільки ранг 9+)", min_length=1, max_length=12
+        label="Баланс (ранг 9+)", min_length=1, max_length=12
+    )
+    contracts_f = discord.ui.TextInput(
+        label="Кількість контрактів (ранг 9+)", min_length=1, max_length=6
     )
 
     def __init__(self, owner_id: int, caller_rank: int, db_user: dict, member):
@@ -1315,11 +1319,11 @@ class EditPlayerModal(discord.ui.Modal, title="Редагувати гравця
         self.db_user = db_user
         self.member = member
 
-        # Заповнюємо поточними значеннями
         self.game_name_f.default = db_user["game_name"]
         self.real_name_f.default = db_user["real_name"]
         self.rank_f.default = str(db_user["rank"])
         self.balance_f.default = str(db_user["balance"])
+        self.contracts_f.default = str(db_user["contracts_count"])
 
     async def on_submit(self, interaction: discord.Interaction):
         caller = await user_by_did(interaction.user.id)
@@ -1333,8 +1337,9 @@ class EditPlayerModal(discord.ui.Modal, title="Редагувати гравця
         try:
             new_rank = int(self.rank_f.value.strip())
             new_balance = int(self.balance_f.value.strip())
+            new_contracts = int(self.contracts_f.value.strip())
         except ValueError:
-            await interaction.response.send_message("Ранг і баланс — числа", ephemeral=True)
+            await interaction.response.send_message("Ранг, баланс і контракти — числа", ephemeral=True)
             return
 
         if len(new_gn.split()) != 2:
@@ -1346,23 +1351,24 @@ class EditPlayerModal(discord.ui.Modal, title="Редагувати гравця
         if new_rank >= caller["rank"] and caller["rank"] < 10:
             await interaction.response.send_message("Не можна виставити ранг ≥ своєму", ephemeral=True)
             return
-        if new_balance < 0:
-            await interaction.response.send_message("Баланс не може бути від'ємним", ephemeral=True)
+        if new_balance < 0 or new_contracts < 0:
+            await interaction.response.send_message("Баланс і контракти не можуть бути від'ємними", ephemeral=True)
             return
 
-        # Баланс — тільки ранг 9+
         balance_changed = new_balance != self.db_user["balance"]
-        if balance_changed and caller["rank"] < 9:
+        contracts_changed = new_contracts != self.db_user["contracts_count"]
+
+        if (balance_changed or contracts_changed) and caller["rank"] < 9:
             await interaction.response.send_message(
-                "❌ Змінювати баланс може тільки ранг 9+", ephemeral=True
+                "❌ Змінювати баланс і контракти може тільки ранг 9+", ephemeral=True
             )
             return
 
         # Оновити в БД
         async with db() as cx:
             await cx.execute(
-                "UPDATE users SET game_name=?, real_name=?, rank=?, balance=? WHERE discord_id=?",
-                (new_gn, new_rn, new_rank, new_balance, self.db_user["discord_id"]),
+                "UPDATE users SET game_name=?, real_name=?, rank=?, balance=?, contracts_count=? WHERE discord_id=?",
+                (new_gn, new_rn, new_rank, new_balance, new_contracts, self.db_user["discord_id"]),
             )
             await cx.commit()
 
@@ -1396,17 +1402,24 @@ class EditPlayerModal(discord.ui.Modal, title="Редагувати гравця
             changes.append(f"Ранг: {rank_label(self.db_user['rank'])} → {rank_label(new_rank)}")
         if balance_changed:
             changes.append(f"Баланс: ${self.db_user['balance']:,} → ${new_balance:,}")
+        if contracts_changed:
+            changes.append(f"Контракти: {self.db_user['contracts_count']} → {new_contracts}")
 
         changes_txt = "\n".join(f"▸ {c}" for c in changes) if changes else "Змін немає"
 
         view = BackToAdminView(interaction.user.id, caller["rank"])
         await interaction.response.edit_message(
-            content=(
-                f"✅ **Гравця оновлено: {new_gn}**\n\n"
-                f"{changes_txt}"
-            ),
+            content=f"✅ **Гравця оновлено: {new_gn}**\n\n{changes_txt}",
             view=view,
         )
+
+        if changes:
+            await notify(
+                f"✏️ **Гравця відредаговано**\n\n"
+                f"👤 {new_gn}\n"
+                + "\n".join(f"▸ {c}" for c in changes) +
+                f"\n\nРедагував: {caller['game_name']}"
+            )
 
         if changes:
             await notify(
@@ -1653,21 +1666,28 @@ class AdminMenuView(OwnedView):
             await interaction.response.send_message("Нема доступу (ранг 9+)", ephemeral=True)
             return
         bal = await family_balance()
+        weekly_fund = await get_weekly_family_fund()
+        distribute = weekly_fund // 2
+        family_keeps = weekly_fund - distribute
         view = FamilyBalanceView(interaction.user.id, self.rank)
         await interaction.response.edit_message(
             content=(
                 "╔══════════════════════╗\n"
                 "      🏦 **БАЛАНС СІМ'Ї**\n"
                 "╚══════════════════════╝\n\n"
-                f"💵 Поточний баланс: **${bal:,}**"
+                f"💵 **Актуальний баланс:** ${bal:,}\n\n"
+                f"📅 **За поточний тиждень:**\n"
+                f"▸ Фонд тижня: **${weekly_fund:,}**\n"
+                f"▸ Піде на виплати (50%): **${distribute:,}**\n"
+                f"▸ Залишається сім'ї (50%): **${family_keeps:,}**"
             ),
             view=view,
         )
 
     @discord.ui.button(label="🎁 Видати премію", style=discord.ButtonStyle.green, row=1)
     async def give_bonus(self, interaction: discord.Interaction, _):
-        if self.rank < 10:
-            await interaction.response.send_message("Нема доступу (ранг 10)", ephemeral=True)
+        if self.rank < 9:
+            await interaction.response.send_message("Нема доступу (ранг 9+)", ephemeral=True)
             return
         view = BonusUserPickView(interaction.user.id, self.rank)
         await interaction.response.edit_message(
@@ -3057,6 +3077,161 @@ async def weekly_payout_loop():
 
 
 # =========================================================
+# WELCOME — кнопка реєстрації в каналі вітання
+# =========================================================
+class WelcomeView(discord.ui.View):
+    """Постійна кнопка в каналі вітання — без timeout."""
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="📋 Реєстрація в боті",
+        style=discord.ButtonStyle.green,
+        custom_id="welcome_register",
+    )
+    async def register_btn(self, interaction: discord.Interaction, _):
+        # Перевірити чи вже зареєстрований
+        u_any = await user_by_did(interaction.user.id, only_active=False)
+        if u_any and u_any["is_active"] == 0:
+            await interaction.response.send_message(
+                "❌ Твій доступ відключений адміністратором.", ephemeral=True
+            )
+            return
+        if u_any:
+            await interaction.response.send_message(
+                f"✅ Ти вже зареєстрований як **{u_any['game_name']}**!\nНапиши `/start` щоб відкрити меню.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_modal(WelcomeRegisterModal())
+
+
+class WelcomeRegisterModal(discord.ui.Modal, title="Реєстрація в сім'ї"):
+    game_name = discord.ui.TextInput(
+        label="Ігрове ім'я (Ім'я Прізвище)", placeholder="Sam Fly", min_length=3, max_length=50
+    )
+    static_id = discord.ui.TextInput(
+        label="Static ID (1-5 символів)", placeholder="12345", min_length=1, max_length=5
+    )
+    real_name = discord.ui.TextInput(
+        label="Реальне ім'я", placeholder="Іван", min_length=1, max_length=50
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        gn = self.game_name.value.strip()
+        sid = self.static_id.value.strip()
+        rn = self.real_name.value.strip()
+
+        if len(gn.split()) != 2:
+            await interaction.response.send_message(
+                "❌ Ігрове ім'я: «Ім'я Прізвище» (два слова). Спробуй ще раз.",
+                ephemeral=True,
+            )
+            return
+
+        async with db() as cx:
+            cx.row_factory = aiosqlite.Row
+            if await (await cx.execute("SELECT id FROM users WHERE game_name=?", (gn,))).fetchone():
+                await interaction.response.send_message(
+                    f"❌ Ігрове ім'я «{gn}» вже зайнято.", ephemeral=True
+                )
+                return
+            if await (await cx.execute("SELECT id FROM users WHERE static_id=?", (sid,))).fetchone():
+                await interaction.response.send_message(
+                    f"❌ Static ID «{sid}» вже зайнято.", ephemeral=True
+                )
+                return
+
+        try:
+            await add_user({
+                "discord_id": interaction.user.id,
+                "username": str(interaction.user),
+                "game_name": gn, "static_id": sid, "real_name": rn,
+            })
+        except Exception:
+            await interaction.response.send_message("Помилка реєстрації. Спробуй знову.", ephemeral=True)
+            return
+
+        # Змінити нік
+        new_nick = f"{gn} | {rn}"
+        try:
+            await interaction.user.edit(nick=new_nick)
+        except discord.Forbidden:
+            pass
+
+        # Видати ролі @FLY і 1 | Кандидат
+        guild = interaction.guild
+        if guild:
+            fly_role = discord.utils.get(guild.roles, name="FLY")
+            passenger_role = discord.utils.get(guild.roles, name=PASSENGER_ROLE_NAME)
+            roles_to_add = [r for r in [fly_role, passenger_role] if r]
+            try:
+                if roles_to_add:
+                    await interaction.user.add_roles(*roles_to_add)
+            except discord.Forbidden:
+                pass
+
+        await interaction.response.send_message(
+            f"✅ **Ласкаво просимо, {gn}!**\n\n"
+            f"🎖️ Ранг: **{rank_label(1)}**\n"
+            f"🆔 Static ID: `{sid}`\n\n"
+            "Напиши `/start` у будь-якому каналі щоб відкрити меню.",
+            ephemeral=True,
+        )
+        await notify(
+            f"👤 Новий учасник: **{gn}**\n"
+            f"Static ID: {sid} | Реальне ім'я: {rn}\n"
+            f"Discord: {interaction.user}"
+        )
+
+
+async def post_welcome_message():
+    """Розміщує постійне повідомлення з кнопкою реєстрації в каналі вітання."""
+    channel = bot.get_channel(WELCOME_CHANNEL_ID)
+    if not channel:
+        print(f"⚠️ Канал вітання {WELCOME_CHANNEL_ID} не знайдено")
+        return
+
+    # Перевіряємо чи вже є повідомлення з кнопкою від бота
+    async for msg in channel.history(limit=20):
+        if msg.author == bot.user and msg.components:
+            print("✅ Повідомлення реєстрації вже існує")
+            return
+
+    view = WelcomeView()
+    await channel.send(
+        "╔══════════════════════╗\n"
+        "   👋 **ЛАСКАВО ПРОСИМО**\n"
+        "╚══════════════════════╝\n\n"
+        "Щоб стати частиною сім'ї — натисни кнопку нижче і заповни форму реєстрації.\n\n"
+        "Після реєстрації ти отримаєш:\n"
+        f"🎖️ Ранг **{rank_label(1)}**\n"
+        "🏷️ Роль **@FLY**\n"
+        "📋 Доступ до меню бота через `/start`",
+        view=view,
+    )
+    print("✅ Повідомлення реєстрації розміщено")
+
+
+# =========================================================
+# ON MEMBER JOIN
+# =========================================================
+@bot.event
+async def on_member_join(member: discord.Member):
+    """Коли новий учасник заходить — надсилаємо йому повідомлення в ЛС."""
+    try:
+        await member.send(
+            f"👋 **Привіт, {member.display_name}!**\n\n"
+            "Ласкаво просимо на сервер!\n\n"
+            "Щоб зареєструватись у системі сім'ї — зайди в канал реєстрації "
+            "і натисни кнопку **📋 Реєстрація в боті**.\n\n"
+            "Після реєстрації ти отримаєш доступ до всіх функцій через `/start`."
+        )
+    except discord.Forbidden:
+        pass  # ЛС закриті
+
+
+# =========================================================
 # ON READY
 # =========================================================
 @bot.event
@@ -3066,8 +3241,11 @@ async def on_ready():
         async with db() as cx:
             await cx.execute("UPDATE users SET rank=10 WHERE discord_id=?", (oid,))
             await cx.commit()
+    # Реєструємо persistent view щоб кнопка працювала після перезапуску
+    bot.add_view(WelcomeView())
     await tree.sync()
     bot.loop.create_task(weekly_payout_loop())
+    await post_welcome_message()
     print(f"✅ Бот запущено як {bot.user}")
     print("✅ Slash-команди синхронізовано")
     print("✅ Пиши /start у будь-якому каналі сервера")
