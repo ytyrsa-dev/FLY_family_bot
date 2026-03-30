@@ -1306,10 +1306,10 @@ class EditPlayerModal(discord.ui.Modal, title="Редагувати гравця
         label="Ранг (1-10)", min_length=1, max_length=2
     )
     balance_f = discord.ui.TextInput(
-        label="Баланс (ранг 9+)", min_length=1, max_length=12
+        label="Баланс гравця", min_length=1, max_length=12
     )
     contracts_f = discord.ui.TextInput(
-        label="Кількість контрактів (ранг 9+)", min_length=1, max_length=6
+        label="Кількість контрактів", min_length=1, max_length=6
     )
 
     def __init__(self, owner_id: int, caller_rank: int, db_user: dict, member):
@@ -1372,6 +1372,11 @@ class EditPlayerModal(discord.ui.Modal, title="Редагувати гравця
             )
             await cx.commit()
 
+        # Якщо баланс зменшився — різниця іде в сім'ю
+        if balance_changed and new_balance < self.db_user["balance"]:
+            diff = self.db_user["balance"] - new_balance
+            await add_to_family_balance(diff)
+
         # Оновити нік на сервері
         new_nick = f"{new_gn} | {new_rn}"
         try:
@@ -1401,7 +1406,11 @@ class EditPlayerModal(discord.ui.Modal, title="Редагувати гравця
         if new_rank != self.db_user["rank"]:
             changes.append(f"Ранг: {rank_label(self.db_user['rank'])} → {rank_label(new_rank)}")
         if balance_changed:
-            changes.append(f"Баланс: ${self.db_user['balance']:,} → ${new_balance:,}")
+            if new_balance < self.db_user["balance"]:
+                diff = self.db_user["balance"] - new_balance
+                changes.append(f"Баланс: ${self.db_user['balance']:,} → ${new_balance:,} (різниця ${diff:,} → сім'я)")
+            else:
+                changes.append(f"Баланс: ${self.db_user['balance']:,} → ${new_balance:,}")
         if contracts_changed:
             changes.append(f"Контракти: {self.db_user['contracts_count']} → {new_contracts}")
 
@@ -1693,16 +1702,6 @@ class AdminMenuView(OwnedView):
         await interaction.response.edit_message(
             content="🎁 **Видати премію**\n\nВибери гравця через @:",
             view=view,
-        )
-
-    @discord.ui.button(label="🎭 Видати роль", style=discord.ButtonStyle.secondary, row=1)
-    async def give_role(self, interaction: discord.Interaction, _):
-        if self.rank < 6:
-            await interaction.response.send_message("Нема доступу (ранг 6+)", ephemeral=True)
-            return
-        view = UserPickView(interaction.user.id, action="give_role", caller_rank=self.rank)
-        await interaction.response.edit_message(
-            content="🎭 **Видати роль**\n\nВибери учасника зі списку:", view=view
         )
 
     @discord.ui.button(label="➕ Додати контракт", style=discord.ButtonStyle.green, row=2)
