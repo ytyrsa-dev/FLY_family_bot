@@ -202,7 +202,7 @@ async def deactivate_user(sid: str):
 async def deduct_balance(did: int, amount: int):
     async with db() as cx:
         await cx.execute(
-            "UPDATE users SET balance=balance-? WHERE discord_id=? AND is_active=1", (amount, did)
+            "UPDATE users SET balance=MAX(0,balance-?) WHERE discord_id=? AND is_active=1", (amount, did)
         )
         await cx.commit()
 
@@ -443,10 +443,10 @@ async def delete_completed_contract(cid: int):
         )).fetchall()
         for p in ps:
             await cx.execute(
-                "UPDATE users SET balance=balance-?,contracts_count=MAX(0,contracts_count-1) WHERE static_id=?",
+                "UPDATE users SET balance=MAX(0,balance-?),contracts_count=MAX(0,contracts_count-1) WHERE static_id=?",
                 (p["payout_amount"], p["static_id"]),
             )
-        await cx.execute("UPDATE family_bank SET balance=balance-? WHERE id=1", (cc["family_amount"],))
+        await cx.execute("UPDATE family_bank SET balance=MAX(0,balance-?) WHERE id=1", (cc["family_amount"],))
         await cx.execute("DELETE FROM completed_contract_participants WHERE completed_contract_id=?", (cid,))
         await cx.execute("DELETE FROM completed_contracts WHERE id=?", (cid,))
         await cx.commit()
@@ -464,10 +464,10 @@ async def replace_contract_participants(cid: int, new_sids: list[str]):
         )).fetchall()
         for p in old:
             await cx.execute(
-                "UPDATE users SET balance=balance-?,contracts_count=MAX(0,contracts_count-1) WHERE static_id=?",
+                "UPDATE users SET balance=MAX(0,balance-?),contracts_count=MAX(0,contracts_count-1) WHERE static_id=?",
                 (p["payout_amount"], p["static_id"]),
             )
-        await cx.execute("UPDATE family_bank SET balance=balance-? WHERE id=1", (cc["family_amount"],))
+        await cx.execute("UPDATE family_bank SET balance=MAX(0,balance-?) WHERE id=1", (cc["family_amount"],))
         await cx.execute("DELETE FROM completed_contract_participants WHERE completed_contract_id=?", (cid,))
 
         parts = []
@@ -2539,7 +2539,7 @@ class BonusModal(discord.ui.Modal, title="Видати премію"):
 
         # Списати з балансу сім'ї і додати гравцю
         async with db() as cx:
-            await cx.execute("UPDATE family_bank SET balance=balance-? WHERE id=1", (amount,))
+            await cx.execute("UPDATE family_bank SET balance=MAX(0,balance-?) WHERE id=1", (amount,))
             await cx.commit()
         await add_to_balance(self.target_did, amount)
 
@@ -2683,7 +2683,7 @@ class DonateModal(discord.ui.Modal, title="Донат сім'ї"):
         await add_to_family_balance(amount)
         async with db() as cx:
             await cx.execute(
-                "UPDATE users SET balance=balance-? WHERE discord_id=? AND is_active=1",
+                "UPDATE users SET balance=MAX(0,balance-?) WHERE discord_id=? AND is_active=1",
                 (amount, u["discord_id"]),
             )
             await cx.commit()
@@ -2865,7 +2865,7 @@ async def execute_payout(data: dict):
     # Списуємо з балансу сім'ї
     async with db() as cx:
         await cx.execute(
-            "UPDATE family_bank SET balance=balance-? WHERE id=1",
+            "UPDATE family_bank SET balance=MAX(0,balance-?) WHERE id=1",
             (data["total_to_distribute"],)
         )
         await cx.commit()
