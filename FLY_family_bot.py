@@ -2601,13 +2601,19 @@ class TopSelectView(OwnedView):
             for i, r in enumerate(active)
         )
         total = sum(r["contracts_count"] for r in active)
+        # Реальна кількість унікальних контрактів за весь час
+        async with db() as cx:
+            row = await (await cx.execute(
+                "SELECT COUNT(*) as cnt FROM completed_contracts"
+            )).fetchone()
+            unique_total = row[0] if row else 0
         await interaction.response.edit_message(
             content=(
                 "╔══════════════════════╗\n"
                 "   🏆 **ТОП — ЗА ВСЬ ЧАС**\n"
                 "╚══════════════════════╝\n\n"
                 f"{lines}\n\n"
-                f"📋 Всього контрактів у топ-10: **{total}**"
+                f"📋 Всього контрактів виконано: **{unique_total}**"
             ),
             view=BackView(interaction.user.id),
         )
@@ -2638,14 +2644,22 @@ class TopSelectView(OwnedView):
             f"{medal[i] if i < len(medal) else '▸'} **{r['game_name']}** — {r['week_contracts']} контр."
             for i, r in enumerate(active)
         )
-        total_week = sum(r["week_contracts"] for r in active)
+        total_week = len([r for r in active if r["week_contracts"] > 0])
+        # Реальна кількість унікальних контрактів за тиждень
+        start_iso, end_iso = get_week_bounds()
+        async with db() as cx:
+            row = await (await cx.execute(
+                "SELECT COUNT(*) as cnt FROM completed_contracts WHERE created_at >= ? AND created_at < ?",
+                (start_iso, end_iso)
+            )).fetchone()
+            unique_contracts = row[0] if row else 0
         await interaction.response.edit_message(
             content=(
                 "╔══════════════════════╗\n"
                 f"  📅 **ТОП {start_dt}–{end_dt}**\n"
                 "╚══════════════════════╝\n\n"
                 f"{lines}\n\n"
-                f"📋 Всього контрактів за тиждень: **{total_week}**\n"
+                f"📋 Всього контрактів за тиждень: **{unique_contracts}**\n"
                 f"🏦 Фонд тижня: **${fund:,}**"
             ),
             view=BackView(interaction.user.id),
