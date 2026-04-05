@@ -1672,8 +1672,10 @@ class AdminMenuView(OwnedView):
             return
         bal = await family_balance()
         weekly_fund = await get_weekly_family_fund()
-        distribute = weekly_fund // 2
-        family_keeps = weekly_fund - distribute
+        distribute = weekly_fund
+        family_keeps = int(weekly_fund * 0.50)
+        top5_amount = int(weekly_fund * 0.35)
+        others_amount = int(weekly_fund * 0.15)
         view = FamilyBalanceView(interaction.user.id, self.rank)
         await interaction.response.edit_message(
             content=(
@@ -1683,8 +1685,9 @@ class AdminMenuView(OwnedView):
                 f"💵 **Актуальний баланс:** ${bal:,}\n\n"
                 f"📅 **За поточний тиждень:**\n"
                 f"▸ Фонд тижня: **${weekly_fund:,}**\n"
-                f"▸ Піде на виплати (50%): **${distribute:,}**\n"
-                f"▸ Залишається сім'ї (50%): **${family_keeps:,}**"
+                f"▸ Залишається сім'ї (50%): **${family_keeps:,}**\n"
+                f"▸ Топ-5 отримають (35%): **${top5_amount:,}**\n"
+                f"▸ Решта учасників (15%): **${others_amount:,}**"
             ),
             view=view,
         )
@@ -2813,8 +2816,8 @@ async def build_payout_preview(prev_start: str, prev_end_str: str) -> dict | Non
         return None
 
     fam_bal = await family_balance()
-    distribute = weekly_fund // 2
-    family_keeps = weekly_fund - distribute
+    distribute = weekly_fund  # відсотки беруться від повного фонду
+    family_keeps = int(weekly_fund * 0.50)
 
     async with db() as cx:
         cx.row_factory = aiosqlite.Row
@@ -2873,14 +2876,15 @@ async def build_payout_preview(prev_start: str, prev_end_str: str) -> dict | Non
 async def execute_payout(data: dict):
     """Виконує фактичні виплати після підтвердження."""
     fam_bal = await family_balance()
-    if fam_bal < data["distribute"]:
-        return False, f"Недостатньо коштів у банку сім'ї. Є: ${fam_bal:,}, потрібно: ${data['distribute']:,}"
+    actual_payout = sum(p["payout"] for p in data["top5"] + data["others"])
+    if fam_bal < actual_payout:
+        return False, f"Недостатньо коштів у банку сім'ї. Є: ${fam_bal:,}, потрібно: ${actual_payout:,}"
 
-    # Списуємо з балансу сім'ї повні 50% фонду
+    # Списуємо з балансу сім'ї тільки суму виплат (50% фонду)
     async with db() as cx:
         await cx.execute(
             "UPDATE family_bank SET balance=MAX(0,balance-?) WHERE id=1",
-            (data["distribute"],)
+            (actual_payout,)
         )
         await cx.commit()
 
@@ -2912,8 +2916,8 @@ def build_preview_text(data: dict) -> str:
         "╚══════════════════════╝\n\n"
         f"📊 Фонд тижня: **${data['weekly_fund']:,}**\n"
         f"🏦 Баланс сім'ї: **${data['fam_bal']:,}**\n"
-        f"💸 До розподілу між гравцями (50%): **${data['distribute']:,}**\n"
-        f"🏦 Залишається сім'ї (50%): **${data['family_keeps']:,}**\n\n"
+        f"🏦 Залишається сім'ї (50%): **${data['family_keeps']:,}**\n"
+        f"💸 Виплачується гравцям (50%): **${data['total_to_distribute']:,}**\n\n"
         f"🏆 **ТОП-5:**\n{top_lines}"
         f"{others_lines}"
     )
@@ -2963,7 +2967,7 @@ class WeeklyPayoutConfirmView(discord.ui.View):
             "╚══════════════════════╝\n\n"
             f"📊 Фонд тижня: **${self.data['weekly_fund']:,}**\n"
             f"🏦 Залишається сім'ї (50%): **${self.data['family_keeps']:,}**\n"
-            f"💸 Розподілено між гравцями (50%): **${self.data['distribute']:,}**\n\n"
+            f"💸 Виплачено гравцям (50%): **${self.data['total_to_distribute']:,}**\n\n"
             f"🏆 **ТОП-5 ТИЖНЯ:**\n{top_lines}"
             f"{others_lines}"
         )
