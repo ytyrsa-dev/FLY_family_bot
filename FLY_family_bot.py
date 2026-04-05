@@ -2834,7 +2834,7 @@ async def build_payout_preview(prev_start: str, prev_end_str: str) -> dict | Non
         """, (prev_start, prev_end_str))).fetchall()
 
     players = [dict(p) for p in players]
-    active_players = [p for p in players if p["week_contracts"] > 0]
+    active_players = [p for p in players if p["week_contracts"] >= 5]
     if not active_players:
         return None
 
