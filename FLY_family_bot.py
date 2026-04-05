@@ -329,9 +329,9 @@ async def get_top_weekly(limit: int = 10):
             SELECT u.game_name, u.static_id,
                    COUNT(ccp.id) as week_contracts
             FROM users u
-            LEFT JOIN completed_contract_participants ccp ON ccp.discord_id = u.discord_id
-            LEFT JOIN completed_contracts cc ON cc.id = ccp.completed_contract_id
-                AND cc.created_at >= ? AND cc.created_at < ?
+            LEFT JOIN completed_contracts cc ON cc.created_at >= ? AND cc.created_at < ?
+            LEFT JOIN completed_contract_participants ccp ON ccp.completed_contract_id = cc.id
+                AND ccp.discord_id = u.discord_id
             WHERE u.is_active = 1
             GROUP BY u.discord_id
             ORDER BY week_contracts DESC
@@ -360,9 +360,9 @@ async def get_all_active_users_with_weekly(start: str, end: str):
             SELECT u.discord_id, u.game_name, u.static_id,
                    COUNT(ccp.id) as week_contracts
             FROM users u
-            LEFT JOIN completed_contract_participants ccp ON ccp.discord_id = u.discord_id
-            LEFT JOIN completed_contracts cc ON cc.id = ccp.completed_contract_id
-                AND cc.created_at >= ? AND cc.created_at < ?
+            LEFT JOIN completed_contracts cc ON cc.created_at >= ? AND cc.created_at < ?
+            LEFT JOIN completed_contract_participants ccp ON ccp.completed_contract_id = cc.id
+                AND ccp.discord_id = u.discord_id
             WHERE u.is_active = 1
             GROUP BY u.discord_id
             ORDER BY week_contracts DESC
@@ -2822,9 +2822,9 @@ async def build_payout_preview(prev_start: str, prev_end_str: str) -> dict | Non
             SELECT u.discord_id, u.game_name,
                    COUNT(ccp.id) as week_contracts
             FROM users u
-            LEFT JOIN completed_contract_participants ccp ON ccp.discord_id = u.discord_id
-            LEFT JOIN completed_contracts cc ON cc.id = ccp.completed_contract_id
-                AND cc.created_at >= ? AND cc.created_at < ?
+            LEFT JOIN completed_contracts cc ON cc.created_at >= ? AND cc.created_at < ?
+            LEFT JOIN completed_contract_participants ccp ON ccp.completed_contract_id = cc.id
+                AND ccp.discord_id = u.discord_id
             WHERE u.is_active = 1
             GROUP BY u.discord_id
             ORDER BY week_contracts DESC
@@ -2873,14 +2873,14 @@ async def build_payout_preview(prev_start: str, prev_end_str: str) -> dict | Non
 async def execute_payout(data: dict):
     """Виконує фактичні виплати після підтвердження."""
     fam_bal = await family_balance()
-    if fam_bal < data["total_to_distribute"]:
-        return False, f"Недостатньо коштів у банку сім'ї. Є: ${fam_bal:,}, потрібно: ${data['total_to_distribute']:,}"
+    if fam_bal < data["distribute"]:
+        return False, f"Недостатньо коштів у банку сім'ї. Є: ${fam_bal:,}, потрібно: ${data['distribute']:,}"
 
-    # Списуємо з балансу сім'ї
+    # Списуємо з балансу сім'ї повні 50% фонду
     async with db() as cx:
         await cx.execute(
             "UPDATE family_bank SET balance=MAX(0,balance-?) WHERE id=1",
-            (data["total_to_distribute"],)
+            (data["distribute"],)
         )
         await cx.commit()
 
@@ -2912,9 +2912,8 @@ def build_preview_text(data: dict) -> str:
         "╚══════════════════════╝\n\n"
         f"📊 Фонд тижня: **${data['weekly_fund']:,}**\n"
         f"🏦 Баланс сім'ї: **${data['fam_bal']:,}**\n"
-        f"💸 До розподілу: **${data['distribute']:,}**\n"
-        f"🏦 Залишається сім'ї: **${data['family_keeps']:,}**\n"
-        f"💳 Буде виплачено: **${data['total_to_distribute']:,}**\n\n"
+        f"💸 До розподілу між гравцями (50%): **${data['distribute']:,}**\n"
+        f"🏦 Залишається сім'ї (50%): **${data['family_keeps']:,}**\n\n"
         f"🏆 **ТОП-5:**\n{top_lines}"
         f"{others_lines}"
     )
@@ -2963,8 +2962,8 @@ class WeeklyPayoutConfirmView(discord.ui.View):
             "   💰 **ТИЖНЕВА ВИПЛАТА**\n"
             "╚══════════════════════╝\n\n"
             f"📊 Фонд тижня: **${self.data['weekly_fund']:,}**\n"
-            f"🏦 Залишається сім'ї: **${self.data['family_keeps']:,}**\n"
-            f"💸 Розподілено: **${self.data['total_to_distribute']:,}**\n\n"
+            f"🏦 Залишається сім'ї (50%): **${self.data['family_keeps']:,}**\n"
+            f"💸 Розподілено між гравцями (50%): **${self.data['distribute']:,}**\n\n"
             f"🏆 **ТОП-5 ТИЖНЯ:**\n{top_lines}"
             f"{others_lines}"
         )
