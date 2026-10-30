@@ -40,6 +40,8 @@ DB_NAME = "/data/database.db"
 
 # Назва ролі "1 | Кандидат" на сервері (має збігатись точно)
 PASSENGER_ROLE_NAME = "1 | Кандидат"
+# Роль для гравців сервера NG GTA V (тільки реєстрація, без функціоналу бота)
+NG_ROLE_NAME = "FLY NG"
 
 
 def rank_label(r: int) -> str:
@@ -150,6 +152,15 @@ async def init_db():
             paid_at TIMESTAMP,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE IF NOT EXISTS ng_users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            discord_id INTEGER UNIQUE,
+            username TEXT,
+            game_name TEXT UNIQUE,
+            static_id TEXT UNIQUE,
+            real_name TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
         INSERT OR IGNORE INTO family_bank (id, balance) VALUES (1, 0);
         """)
         await cx.commit()
@@ -182,6 +193,22 @@ async def add_user(data: dict):
     async with db() as cx:
         await cx.execute(
             "INSERT INTO users (discord_id,username,game_name,static_id,real_name) VALUES(?,?,?,?,?)",
+            (data["discord_id"], data["username"], data["game_name"], data["static_id"], data["real_name"]),
+        )
+        await cx.commit()
+
+
+# ---------- NG users (окремо від основної таблиці) ----------
+async def ng_user_by_did(did: int):
+    async with db() as cx:
+        cx.row_factory = aiosqlite.Row
+        return await (await cx.execute("SELECT * FROM ng_users WHERE discord_id=?", (did,))).fetchone()
+
+
+async def add_ng_user(data: dict):
+    async with db() as cx:
+        await cx.execute(
+            "INSERT INTO ng_users (discord_id,username,game_name,static_id,real_name) VALUES(?,?,?,?,?)",
             (data["discord_id"], data["username"], data["game_name"], data["static_id"], data["real_name"]),
         )
         await cx.commit()
@@ -716,97 +743,6 @@ class BackView(OwnedView):
 
 
 # =========================================================
-# REGISTRATION MODAL
-# =========================================================
-class RegisterModal(discord.ui.Modal, title="Реєстрація"):
-    game_name = discord.ui.TextInput(
-        label="Ігрове ім'я (Ім'я Прізвище)", placeholder="Sam Fly", min_length=3, max_length=50
-    )
-    static_id = discord.ui.TextInput(
-        label="Static ID (1-5 символів)", placeholder="12345", min_length=1, max_length=5
-    )
-    real_name = discord.ui.TextInput(
-        label="Реальне ім'я", placeholder="Іван", min_length=1, max_length=50
-    )
-
-    async def on_submit(self, interaction: discord.Interaction):
-        gn = self.game_name.value.strip()
-        sid = self.static_id.value.strip()
-        rn = self.real_name.value.strip()
-
-        if len(gn.split()) != 2:
-            await interaction.response.send_message(
-                "❌ Ігрове ім'я: «Ім'я Прізвище» (два слова). Натисни `/fly` знову.", ephemeral=True
-            )
-            return
-
-        async with db() as cx:
-            cx.row_factory = aiosqlite.Row
-            if await (await cx.execute("SELECT id FROM users WHERE game_name=?", (gn,))).fetchone():
-                await interaction.response.send_message(
-                    f"❌ Ігрове ім'я «{gn}» вже зайнято. Натисни `/fly` знову.", ephemeral=True
-                )
-                return
-            if await (await cx.execute("SELECT id FROM users WHERE static_id=?", (sid,))).fetchone():
-                await interaction.response.send_message(
-                    f"❌ Static ID «{sid}» вже зайнято. Натисни `/fly` знову.", ephemeral=True
-                )
-                return
-
-        try:
-            await add_user({
-                "discord_id": interaction.user.id,
-                "username": str(interaction.user),
-                "game_name": gn, "static_id": sid, "real_name": rn,
-            })
-        except Exception:
-            await interaction.response.send_message("Помилка реєстрації. Спробуй знову.", ephemeral=True)
-            return
-
-        # Змінити нікнейм на сервері: "Sam Fly | Іван"
-        new_nick = f"{gn} | {rn}"
-        try:
-            await interaction.user.edit(nick=new_nick)
-        except discord.Forbidden:
-            pass  # Немає прав — не критично
-
-        # Видати роль "1 | Кандидат"
-        try:
-            guild = interaction.guild
-            if guild:
-                role = discord.utils.get(guild.roles, name=PASSENGER_ROLE_NAME)
-                if role:
-                    await interaction.user.add_roles(role)
-        except discord.Forbidden:
-            pass  # Немає прав — не критично
-
-        view = MainMenuView(interaction.user.id, 1)
-        welcome = (
-            f"✅ Ласкаво просимо, **{gn}**!\n\n"
-            "Ти успішно зареєстрований у системі сім'ї.\n\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            "📖 **Короткий гайд**\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            "👤 **Профіль** — ігрове ім'я, Static ID, ранг, баланс\n"
-            "💰 **Баланс** — нараховується після контрактів\n"
-            "📄 **Мої контракти** — історія участі\n"
-            "💸 **Вивід** — запит адміністратору\n"
-            "📝 **Заповнити контракт** — ранг 5+\n"
-            "📢 **Сповістити** — ранг 5+\n"
-            "🛠 **Адмін-панель** — ранг 5+\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            f"Твій ранг: **{rank_label(1)}**\n"
-            f"Твій нік на сервері: **{new_nick}**\n"
-            "Удачі! 🚀\n\n"
-            "👇 **Головне меню:**"
-        )
-        await interaction.response.send_message(welcome, view=view, ephemeral=True)
-        await notify(
-            f"👤 Новий користувач: **{gn}**\nStatic ID: {sid}\nРеальне ім'я: {rn}\nDiscord: {interaction.user}\nНік: {new_nick}"
-        )
-
-
-# =========================================================
 # /start
 # =========================================================
 @tree.command(name="fly", description="Відкрити меню")
@@ -823,7 +759,17 @@ async def cmd_start(interaction: discord.Interaction):
         await send_main_menu(interaction)
         return
 
-    await interaction.response.send_modal(RegisterModal())
+    if await ng_user_by_did(interaction.user.id):
+        await interaction.response.send_message(
+            "ℹ️ Ти зареєстрований як гравець **NG GTA V**.\n"
+            "Меню бота доступне лише для гравців **Ukraine GTA V**.",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.send_message(
+        "📋 **Реєстрація** — вибери сервер, на якому граєш:", view=WelcomeView(), ephemeral=True
+    )
 
 
 # =========================================================
@@ -3100,12 +3046,12 @@ async def weekly_payout_loop():
 # WELCOME — кнопка реєстрації в каналі вітання
 # =========================================================
 class WelcomeView(discord.ui.View):
-    """Постійна кнопка в каналі вітання — без timeout."""
+    """Постійні кнопки вибору сервера в каналі вітання — без timeout."""
     def __init__(self):
         super().__init__(timeout=None)
 
     @discord.ui.button(
-        label="📋 Реєстрація в боті",
+        label="🇺🇦 Ukraine GTA V",
         style=discord.ButtonStyle.green,
         custom_id="welcome_register",
     )
@@ -3124,6 +3070,99 @@ class WelcomeView(discord.ui.View):
             )
             return
         await interaction.response.send_modal(WelcomeRegisterModal())
+
+    @discord.ui.button(
+        label="🌐 NG GTA V",
+        style=discord.ButtonStyle.blurple,
+        custom_id="welcome_register_ng",
+    )
+    async def register_ng_btn(self, interaction: discord.Interaction, _):
+        ng = await ng_user_by_did(interaction.user.id)
+        if ng:
+            await interaction.response.send_message(
+                f"✅ Ти вже зареєстрований на **NG GTA V** як **{ng['game_name']}**!",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_modal(NgRegisterModal())
+
+
+class NgRegisterModal(discord.ui.Modal, title="Реєстрація — NG GTA V"):
+    game_name = discord.ui.TextInput(
+        label="Ігрове ім'я (Ім'я Прізвище)", placeholder="Sam Fly", min_length=3, max_length=50
+    )
+    static_id = discord.ui.TextInput(
+        label="Static ID (1-5 символів)", placeholder="12345", min_length=1, max_length=5
+    )
+    real_name = discord.ui.TextInput(
+        label="Реальне ім'я", placeholder="Іван", min_length=1, max_length=50
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        gn = self.game_name.value.strip()
+        sid = self.static_id.value.strip()
+        rn = self.real_name.value.strip()
+
+        if len(gn.split()) != 2:
+            await interaction.response.send_message(
+                "❌ Ігрове ім'я: «Ім'я Прізвище» (два слова). Спробуй ще раз.",
+                ephemeral=True,
+            )
+            return
+
+        async with db() as cx:
+            cx.row_factory = aiosqlite.Row
+            if await (await cx.execute("SELECT id FROM ng_users WHERE game_name=?", (gn,))).fetchone():
+                await interaction.response.send_message(
+                    f"❌ Ігрове ім'я «{gn}» вже зайнято.", ephemeral=True
+                )
+                return
+            if await (await cx.execute("SELECT id FROM ng_users WHERE static_id=?", (sid,))).fetchone():
+                await interaction.response.send_message(
+                    f"❌ Static ID «{sid}» вже зайнято.", ephemeral=True
+                )
+                return
+
+        try:
+            await add_ng_user({
+                "discord_id": interaction.user.id,
+                "username": str(interaction.user),
+                "game_name": gn, "static_id": sid, "real_name": rn,
+            })
+        except Exception:
+            await interaction.response.send_message("Помилка реєстрації. Спробуй знову.", ephemeral=True)
+            return
+
+        # Нік міняємо тільки якщо гравець не зареєстрований ще й на Ukraine
+        new_nick = f"{gn} | {rn}"
+        if not await user_by_did(interaction.user.id, only_active=False):
+            try:
+                await interaction.user.edit(nick=new_nick)
+            except discord.Forbidden:
+                pass
+
+        # Видати тільки роль FLY NG
+        guild = interaction.guild
+        if guild:
+            ng_role = discord.utils.get(guild.roles, name=NG_ROLE_NAME)
+            try:
+                if ng_role:
+                    await interaction.user.add_roles(ng_role)
+            except discord.Forbidden:
+                pass
+
+        await interaction.response.send_message(
+            f"✅ **Ласкаво просимо, {gn}!**\n\n"
+            f"🌐 Сервер: **NG GTA V**\n"
+            f"🆔 Static ID: `{sid}`\n"
+            f"🏷️ Роль **@{NG_ROLE_NAME}** видано — тепер тобі доступні канали NG.",
+            ephemeral=True,
+        )
+        await notify(
+            f"👤 Новий учасник **[NG GTA V]**: **{gn}**\n"
+            f"Static ID: {sid} | Реальне ім'я: {rn}\n"
+            f"Discord: {interaction.user}"
+        )
 
 
 class WelcomeRegisterModal(discord.ui.Modal, title="Реєстрація в сім'ї"):
@@ -3199,7 +3238,7 @@ class WelcomeRegisterModal(discord.ui.Modal, title="Реєстрація в сі
             ephemeral=True,
         )
         await notify(
-            f"👤 Новий учасник: **{gn}**\n"
+            f"👤 Новий учасник **[Ukraine GTA V]**: **{gn}**\n"
             f"Static ID: {sid} | Реальне ім'я: {rn}\n"
             f"Discord: {interaction.user}"
         )
@@ -3212,24 +3251,27 @@ async def post_welcome_message():
         print(f"⚠️ Канал вітання {WELCOME_CHANNEL_ID} не знайдено")
         return
 
-    # Перевіряємо чи вже є повідомлення з кнопкою від бота
-    async for msg in channel.history(limit=20):
-        if msg.author == bot.user and msg.components:
-            print("✅ Повідомлення реєстрації вже існує")
-            return
-
-    view = WelcomeView()
-    await channel.send(
+    text = (
         "╔══════════════════════╗\n"
         "   👋 **ЛАСКАВО ПРОСИМО**\n"
         "╚══════════════════════╝\n\n"
-        "Щоб стати частиною сім'ї — натисни кнопку нижче і заповни форму реєстрації.\n\n"
-        "Після реєстрації ти отримаєш:\n"
+        "Щоб стати частиною сім'ї — вибери сервер, на якому граєш, і заповни форму реєстрації.\n\n"
+        "🇺🇦 **Ukraine GTA V:**\n"
         f"🎖️ Ранг **{rank_label(1)}**\n"
         "🏷️ Роль **@FLY**\n"
-        "📋 Доступ до меню бота через `/fly`",
-        view=view,
+        "📋 Доступ до меню бота через `/fly`\n\n"
+        "🌐 **NG GTA V:**\n"
+        f"🏷️ Роль **@{NG_ROLE_NAME}** і доступ до каналів NG"
     )
+
+    # Якщо повідомлення з кнопкою вже є — оновлюємо його (текст і кнопки)
+    async for msg in channel.history(limit=20):
+        if msg.author == bot.user and msg.components:
+            await msg.edit(content=text, view=WelcomeView())
+            print("✅ Повідомлення реєстрації оновлено")
+            return
+
+    await channel.send(text, view=WelcomeView())
     print("✅ Повідомлення реєстрації розміщено")
 
 
@@ -3244,8 +3286,7 @@ async def on_member_join(member: discord.Member):
             f"👋 **Привіт, {member.display_name}!**\n\n"
             "Ласкаво просимо на сервер!\n\n"
             "Щоб зареєструватись у системі сім'ї — зайди в канал реєстрації "
-            "і натисни кнопку **📋 Реєстрація в боті**.\n\n"
-            "Після реєстрації ти отримаєш доступ до всіх функцій через `/fly`."
+            "і натисни кнопку свого сервера: **🇺🇦 Ukraine GTA V** або **🌐 NG GTA V**."
         )
     except discord.Forbidden:
         pass  # ЛС закриті
